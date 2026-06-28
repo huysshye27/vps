@@ -28,7 +28,7 @@ on:
 jobs:
   vps:
     runs-on: ubuntu-24.04
-    timeout-minutes: 350   # Cố định ở mức tối đa, thực tế sẽ tắt sớm hơn theo input
+    timeout-minutes: 350
 
     steps:
       - name: Kiểm tra giới hạn max_runtime
@@ -60,8 +60,10 @@ jobs:
 
       - name: Cài đặt File Browser (File Manager)
         run: |
-          curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
+          curl -fsSL https://github.com/filebrowser/filebrowser/releases/latest/download/linux-amd64-filebrowser.tar.gz -o filebrowser.tar.gz
+          tar xzf filebrowser.tar.gz
           sudo mv filebrowser /usr/local/bin/
+          filebrowser version
 
       - name: Tạo user và thư mục làm việc
         run: |
@@ -97,19 +99,18 @@ jobs:
             AUTH_OPTS=""
           fi
 
-          # Khởi động Terminal (port 8080)
+          # Khởi động Terminal (port 8080) & File Manager (port 8081)
           ttyd -p 8080 $AUTH_OPTS sudo -u devuser bash &
-          sleep 2
-
-          # Khởi động File Manager (port 8081)
           filebrowser -c /home/runner/filebrowser.json &
-          sleep 2
 
-          # Tạo 2 Cloudflare Tunnel (TryCloudflare miễn phí)
+          # Chờ dịch vụ sẵn sàng
+          sleep 3
+
+          # Tạo 2 Cloudflare Tunnel
           cloudflared tunnel --url http://localhost:8080 > tunnel_terminal.log 2>&1 &
-          sleep 3
           cloudflared tunnel --url http://localhost:8081 > tunnel_files.log 2>&1 &
-          sleep 3
+
+          sleep 5
 
           TERMINAL_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel_terminal.log | head -1)
           FILES_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel_files.log | head -1)
@@ -127,15 +128,15 @@ jobs:
           echo "⏱️  Thời gian tồn tại: ${{ steps.check_runtime.outputs.max_runtime }} phút"
           echo "=============================================="
 
-          # Lưu URL ra file để dùng sau nếu cần
+          # Lưu URL ra file để tham khảo
           echo "TERMINAL_URL=$TERMINAL_URL" > /home/runner/vps_info.txt
           echo "FILES_URL=$FILES_URL" >> /home/runner/vps_info.txt
 
-      - name: Giữ VPS hoạt động
+      - name: Giữ VPS hoạt động đến khi hết thời gian
         run: |
           MAX_RUNTIME=${{ steps.check_runtime.outputs.max_runtime }}
           echo "⏳ VPS sẽ tồn tại thêm $MAX_RUNTIME phút."
-          SLEEP_SECONDS=$(( MAX_RUNTIME * 60 - 60 ))   # Trừ hao 1 phút setup
+          SLEEP_SECONDS=$(( MAX_RUNTIME * 60 - 60 ))
           if [ $SLEEP_SECONDS -gt 0 ]; then
             sleep $SLEEP_SECONDS
           fi
