@@ -1,22 +1,18 @@
-name: Temporary VPS (SSH + File Manager)
+name: Temporary VPS (SSH via bore)
 
 on:
   workflow_dispatch:
     inputs:
       ssh_user:
-        description: '👤 Tên đăng nhập SSH'
+        description: '👤 SSH username'
         required: true
         default: 'runner'
       ssh_password:
-        description: '🔑 Mật khẩu SSH'
+        description: '🔑 SSH password'
         required: true
         default: 'MySecurePass123'
-      file_password:
-        description: '🔐 Mật khẩu File Manager (admin) - để trống = 1234'
-        required: false
-        default: '1234'
       max_runtime:
-        description: '⏱️ Thời gian chạy tối đa (phút, tối đa 350)'
+        description: '⏱️ Max runtime (minutes, max 350)'
         required: true
         default: '330'
         type: choice
@@ -35,124 +31,69 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: Kiểm tra giới hạn max_runtime
-        id: check_runtime
+      - name: Check runtime limit
+        id: runtime
         run: |
-          MAX_RUNTIME=${{ github.event.inputs.max_runtime }}
-          if [ "$MAX_RUNTIME" -gt 350 ]; then
-            echo "⚠️ Giới hạn tối đa là 350 phút. Tự động giảm xuống 350."
-            MAX_RUNTIME=350
-          fi
-          echo "max_runtime=$MAX_RUNTIME" >> $GITHUB_OUTPUT
+          MAX=${{ github.event.inputs.max_runtime }}
+          if [ "$MAX" -gt 350 ]; then MAX=350; fi
+          echo "max=$MAX" >> $GITHUB_OUTPUT
 
-      - name: Cài đặt công cụ cơ bản
+      - name: Setup environment (SSH + bore)
         run: |
-          sudo apt update -qq
-          sudo apt install -y -qq curl wget jq openssh-server
+          # Cài đặt công cụ cần thiết (nhanh nhất có thể)
+          sudo apt update -qq && sudo apt install -y -qq openssh-server curl wget
 
-      - name: Cài đặt bore (TCP tunnel cho SSH)
-        run: |
+          # Tải bore (TCP tunnel miễn phí, không giới hạn)
           wget -q "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-unknown-linux-musl.tar.gz" -O bore.tar.gz
           tar xzf bore.tar.gz
           sudo mv bore /usr/local/bin/
-          bore --version
 
-      - name: Cài đặt cloudflared (HTTP tunnel cho File Manager)
-        run: |
-          curl -L -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb
-          cloudflared version
-
-      - name: Cài đặt File Browser
-        run: |
-          curl -fsSL https://github.com/filebrowser/filebrowser/releases/latest/download/linux-amd64-filebrowser.tar.gz -o filebrowser.tar.gz
-          tar xzf filebrowser.tar.gz
-          sudo mv filebrowser /usr/local/bin/
-          filebrowser version
-
-      - name: Cấu hình SSH
-        run: |
+          # Tạo user và cấu hình SSH
           SSH_USER="${{ github.event.inputs.ssh_user }}"
           SSH_PASS="${{ github.event.inputs.ssh_password }}"
 
           if id "$SSH_USER" &>/dev/null; then
-            echo "ℹ️ User $SSH_USER đã tồn tại, đặt lại mật khẩu..."
+            echo "ℹ️ User $SSH_USER exists, resetting password..."
             echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
           else
-            echo "🆕 Tạo user $SSH_USER..."
             sudo useradd -m -s /bin/bash "$SSH_USER"
             echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
             sudo usermod -aG sudo "$SSH_USER"
           fi
 
+          # Bật xác thực bằng mật khẩu
           sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo systemctl restart ssh
 
-      - name: Cấu hình File Browser
+      - name: Start bore tunnel & show connection
         run: |
-          FILE_PASS="${{ github.event.inputs.file_password }}"
-          if [ -z "$FILE_PASS" ]; then
-            FILE_PASS="1234"
-          fi
-
-          # Khởi tạo database
-          filebrowser config init --database /home/runner/filebrowser.db
-          # Thêm user admin với mật khẩu
-          filebrowser users add admin "$FILE_PASS" --database /home/runner/filebrowser.db --perm.admin
-
-          # Tạo thư mục làm việc
-          mkdir -p /home/workspace
-          sudo chown runner:runner /home/workspace
-
-          # Cấu hình
-          filebrowser config set --root /home/workspace --database /home/runner/filebrowser.db
-          filebrowser config set --port 8081 --database /home/runner/filebrowser.db
-          filebrowser config set --address 127.0.0.1 --database /home/runner/filebrowser.db
-
-      - name: Chạy dịch vụ và tạo tunnel
-        run: |
-          # === File Browser + Cloudflare Tunnel ===
-          filebrowser --database /home/runner/filebrowser.db &
-          sleep 2
-          cloudflared tunnel --url http://localhost:8081 > tunnel_files.log 2>&1 &
+          # Mở tunnel TCP port 22 đến bore.pub
+          bore local 22 --to bore.pub > bore.log 2>&1 &
           sleep 5
-          FILES_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel_files.log | head -1)
 
-          # === SSH Tunnel qua bore ===
-          bore local 22 --to bore.pub > bore_ssh.log 2>&1 &
-          sleep 5
-          BORE_PORT=$(grep -oP 'bore\.pub:\K[0-9]+' bore_ssh.log | head -1)
-
+          BORE_PORT=$(grep -oP 'bore\.pub:\K[0-9]+' bore.log | head -1)
           if [ -z "$BORE_PORT" ]; then
-            echo "❌ Không lấy được bore port. Log:"
-            cat bore_ssh.log
+            echo "❌ Failed to get bore port. Log:"
+            cat bore.log
             exit 1
           fi
 
           echo "=============================================="
-          echo "✅ VPS tạm thời đã sẵn sàng!"
+          echo "✅ VPS is ready!"
           echo ""
-          echo "📁 File Manager:  $FILES_URL"
-          echo "   👤 User:       admin"
-          echo "   🔐 Mật khẩu:   ${{ github.event.inputs.file_password }}"
+          echo "💻 SSH command:"
+          echo "   ssh -p $BORE_PORT ${{ github.event.inputs.ssh_user }}@bore.pub"
           echo ""
-          echo "💻 SSH:           ssh -p $BORE_PORT ${{ github.event.inputs.ssh_user }}@bore.pub"
-          echo "   🔑 Mật khẩu:   ${{ github.event.inputs.ssh_password }}"
-          echo ""
-          echo "⏱️  Thời gian:     ${{ steps.check_runtime.outputs.max_runtime }} phút"
+          echo "🔑 Password: ${{ github.event.inputs.ssh_password }}"
+          echo "⏱️  Max runtime: ${{ steps.runtime.outputs.max }} minutes"
           echo "=============================================="
 
-          # Lưu lại để debug nếu cần
-          echo "FILES_URL=$FILES_URL" > /home/runner/vps_info.txt
-          echo "BORE_PORT=$BORE_PORT" >> /home/runner/vps_info.txt
-
-      - name: Giữ VPS hoạt động
+      - name: Keep alive until time expires
         run: |
-          MAX_RUNTIME=${{ steps.check_runtime.outputs.max_runtime }}
-          echo "⏳ VPS sẽ tự hủy sau $MAX_RUNTIME phút."
-          SLEEP_SECONDS=$(( MAX_RUNTIME * 60 - 90 ))   # Trừ hao thời gian khởi động
-          if [ $SLEEP_SECONDS -gt 0 ]; then
-            sleep $SLEEP_SECONDS
+          MAX=${{ steps.runtime.outputs.max }}
+          SLEEP_SEC=$(( MAX * 60 - 60 ))   # trừ 1 phút để dọn dẹp
+          if [ $SLEEP_SEC -gt 0 ]; then
+            sleep $SLEEP_SEC
           fi
-          echo "🛑 Hết thời gian, VPS sẽ bị hủy."
+          echo "🛑 Time's up. VPS will be destroyed."
