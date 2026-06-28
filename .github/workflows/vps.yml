@@ -20,6 +20,14 @@ on:
         description: '🔑 SSH password'
         required: true
         default: 'MySecurePass123'
+      enable_root_ssh:
+        description: '🚀 Cho phép đăng nhập root qua SSH?'
+        required: true
+        default: 'no'
+        type: choice
+        options:
+          - 'yes'
+          - 'no'
       ssh_port:
         description: '🔌 SSH port (mặc định 22)'
         required: true
@@ -59,6 +67,7 @@ jobs:
         env:
           SSH_USER: ${{ github.event.inputs.ssh_user }}
           SSH_PASS: ${{ github.event.inputs.ssh_password }}
+          ENABLE_ROOT: ${{ github.event.inputs.enable_root_ssh }}
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
           NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
@@ -71,6 +80,14 @@ jobs:
           echo ">>> Cài đặt timezone $TIMEZONE..."
           sudo timedatectl set-timezone "$TIMEZONE" || true
 
+          # ---- Cấu hình user & root ----
+          if [ "$ENABLE_ROOT" = "yes" ]; then
+            echo ">>> Cho phép root SSH..."
+            echo "root:$SSH_PASS" | sudo chpasswd
+            sudo sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+            sudo sed -i 's/^PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+          fi
+
           echo ">>> Tạo/cập nhật user $SSH_USER..."
           if id "$SSH_USER" &>/dev/null; then
             echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
@@ -80,6 +97,9 @@ jobs:
             sudo usermod -aG sudo "$SSH_USER"
           fi
 
+          # Cho phép sudo không cần password (tiện cho cả user lẫn root nếu có)
+          echo "$SSH_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$SSH_USER
+
           echo ">>> Cấu hình SSH port $SSH_PORT..."
           sudo sed -i "s/^#Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
           sudo sed -i "s/^Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
@@ -87,6 +107,7 @@ jobs:
           sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo systemctl restart ssh
 
+          # ---- Cài Ngrok ----
           echo ">>> Cài đặt Ngrok..."
           curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" | sudo tee /etc/apt/sources.list.d/ngrok.list
@@ -109,7 +130,7 @@ jobs:
           SSH_HOST=$(echo "$NGROK_URL" | cut -d: -f1)
           SSH_PORT_REMOTE=$(echo "$NGROK_URL" | cut -d: -f2)
 
-          # Tạo script countdown.sh
+          # ---- Script đếm ngược ----
           cat > /home/runner/countdown.sh << 'SCRIPT'
           #!/bin/bash
           END_TIME=$(( $(date +%s) + MAX_MINUTES * 60 ))
@@ -135,24 +156,29 @@ jobs:
 
           export MAX_MINUTES
           chmod +x /home/runner/countdown.sh
-
-          # Khởi động tmux session tên "thoigian"
           tmux new-session -d -s thoigian /home/runner/countdown.sh
 
+          # ---- Thông báo kết nối ----
           echo "=============================================="
           echo "✅ VPS đã sẵn sàng!"
           echo ""
           echo "🖥️  OS: ${{ github.event.inputs.runner_os }}"
           echo "🕒 TZ: $TIMEZONE"
+          if [ "$ENABLE_ROOT" = "yes" ]; then
+            echo "🚀 Root SSH: ENABLED (có thể login bằng root)"
+          fi
           echo ""
           echo "💻 SSH command:"
           echo "   ssh -p $SSH_PORT_REMOTE $SSH_USER@$SSH_HOST"
+          if [ "$ENABLE_ROOT" = "yes" ]; then
+            echo "   hoặc ssh -p $SSH_PORT_REMOTE root@$SSH_HOST"
+          fi
           echo "🔑 Password: $SSH_PASS"
           echo ""
           echo "📱 Dùng app (Termius, JuiceSSH...):"
           echo "   Host: $SSH_HOST"
           echo "   Port: $SSH_PORT_REMOTE"
-          echo "   User: $SSH_USER"
+          echo "   User: $SSH_USER (hoặc root nếu đã bật)"
           echo "   Pass: $SSH_PASS"
           echo ""
           echo "⏱️  Tự hủy sau: $MAX_MINUTES phút"
