@@ -34,18 +34,20 @@ jobs:
       - name: Check runtime
         id: runtime
         run: |
-          MAX=${{ github.event.inputs.max_runtime }}
+          MAX="${{ github.event.inputs.max_runtime }}"
           if [ "$MAX" -gt 350 ]; then MAX=350; fi
           echo "max=$MAX" >> $GITHUB_OUTPUT
 
       - name: Setup SSH + Ngrok tunnel + Countdown
+        env:
+          SSH_USER: ${{ github.event.inputs.ssh_user }}
+          SSH_PASS: ${{ github.event.inputs.ssh_password }}
+          MAX_MINUTES: ${{ steps.runtime.outputs.max }}
+          NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
         run: |
           set -e
           echo ">>> Cài đặt công cụ..."
           sudo apt update -qq && sudo apt install -y -qq openssh-server curl jq tmux
-
-          SSH_USER="${{ github.event.inputs.ssh_user }}"
-          SSH_PASS="${{ github.event.inputs.ssh_password }}"
 
           echo ">>> Tạo/cập nhật user $SSH_USER..."
           if id "$SSH_USER" &>/dev/null; then
@@ -67,7 +69,7 @@ jobs:
           sudo apt update -qq && sudo apt install -y -qq ngrok
 
           echo ">>> Xác thực Ngrok..."
-          ngrok config add-authtoken "${{ vars.NGROK_AUTH_TOKEN }}"
+          ngrok config add-authtoken "$NGROK_TOKEN"
 
           echo ">>> Mở tunnel TCP 22..."
           nohup ngrok tcp 22 --log=stdout > /tmp/ngrok.log 2>&1 &
@@ -83,32 +85,33 @@ jobs:
           SSH_HOST=$(echo "$NGROK_URL" | cut -d: -f1)
           SSH_PORT=$(echo "$NGROK_URL" | cut -d: -f2)
 
-          # ====== THIẾT LẬP TMUX COUNTDOWN ======
-          MAX_MINUTES=${{ steps.runtime.outputs.max }}
+          # Tạo script countdown.sh
           cat > /home/runner/countdown.sh << 'SCRIPT'
-#!/bin/bash
-END_TIME=$(( $(date +%s) + MAX_MINUTES * 60 ))
-while true; do
-  NOW=$(date +%s)
-  REMAINING=$(( END_TIME - NOW ))
-  if [ $REMAINING -le 0 ]; then
-    echo "Hết giờ! VPS sẽ tắt."
-    break
-  fi
-  clear
-  echo "========================================"
-  echo "  VPS TEMPORARY - ĐẾM NGƯỢC THỜI GIAN"
-  echo "  Thời gian còn lại: $(( REMAINING / 60 )) phút $(( REMAINING % 60 )) giây"
-  echo "========================================"
-  echo ""
-  echo "  👉 Nhấn Ctrl+B sau đó nhấn D để thoát"
-  echo "     (không dùng lệnh exit)"
-  echo ""
-  sleep 30
-done
-SCRIPT
-          # Thay MAX_MINUTES vào script
-          sed -i "s/MAX_MINUTES/$MAX_MINUTES/g" /home/runner/countdown.sh
+          #!/bin/bash
+          MAX_MINUTES_PLACEHOLDER
+          END_TIME=$(( $(date +%s) + MAX_MINUTES_PLACEHOLDER * 60 ))
+          while true; do
+            NOW=$(date +%s)
+            REMAINING=$(( END_TIME - NOW ))
+            if [ $REMAINING -le 0 ]; then
+              echo "Hết giờ! VPS sẽ tắt."
+              break
+            fi
+            clear
+            echo "========================================"
+            echo "  VPS TEMPORARY - ĐẾM NGƯỢC THỜI GIAN"
+            echo "  Thời gian còn lại: $(( REMAINING / 60 )) phút $(( REMAINING % 60 )) giây"
+            echo "========================================"
+            echo ""
+            echo "  👉 Nhấn Ctrl+B sau đó nhấn D để thoát"
+            echo "     (không dùng lệnh exit)"
+            echo ""
+            sleep 30
+          done
+          SCRIPT
+
+          # Thay thế biến thời gian
+          sed -i "s/MAX_MINUTES_PLACEHOLDER/$MAX_MINUTES/g" /home/runner/countdown.sh
           chmod +x /home/runner/countdown.sh
 
           # Khởi động tmux session tên "thoigian"
@@ -133,7 +136,7 @@ SCRIPT
           echo "   (Nhấn Ctrl+B, D để thoát)"
           echo "=============================================="
 
-          # ====== ĐẾM NGƯỢC TRÊN ACTION ======
+          # Bộ đếm trên Action log
           for ((i=MAX_MINUTES; i>0; i--)); do
             echo "⏱️  Thời gian còn lại: $i phút"
             sleep 60
