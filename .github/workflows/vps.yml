@@ -1,16 +1,20 @@
-name: Temporary VPS (Web Terminal + File Manager)
+name: Temporary VPS (SSH + File Manager)
 
 on:
   workflow_dispatch:
     inputs:
-      terminal_user:
-        description: '👤 User bảo vệ terminal (bỏ trống nếu không cần)'
+      ssh_user:
+        description: '👤 Tên đăng nhập SSH'
+        required: true
+        default: 'runner'
+      ssh_password:
+        description: '🔑 Mật khẩu SSH'
+        required: true
+        default: 'MySecurePass123'
+      file_password:
+        description: '🔐 Mật khẩu File Manager (admin) - để trống = 1234'
         required: false
-        default: ''
-      terminal_password:
-        description: '🔑 Mật khẩu bảo vệ terminal'
-        required: false
-        default: ''
+        default: '1234'
       max_runtime:
         description: '⏱️ Thời gian chạy tối đa (phút, tối đa 350)'
         required: true
@@ -36,7 +40,7 @@ jobs:
         run: |
           MAX_RUNTIME=${{ github.event.inputs.max_runtime }}
           if [ "$MAX_RUNTIME" -gt 350 ]; then
-            echo "⚠️ Giới hạn tối đa là 350 phút. Sẽ tự động giảm xuống 350."
+            echo "⚠️ Giới hạn tối đa là 350 phút. Tự động giảm xuống 350."
             MAX_RUNTIME=350
           fi
           echo "max_runtime=$MAX_RUNTIME" >> $GITHUB_OUTPUT
@@ -44,99 +48,110 @@ jobs:
       - name: Cài đặt công cụ cơ bản
         run: |
           sudo apt update -qq
-          sudo apt install -y -qq curl wget jq
+          sudo apt install -y -qq curl wget jq openssh-server
 
-      - name: Cài đặt cloudflared
+      - name: Cài đặt bore (TCP tunnel cho SSH)
+        run: |
+          wget -q "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-unknown-linux-musl.tar.gz" -O bore.tar.gz
+          tar xzf bore.tar.gz
+          sudo mv bore /usr/local/bin/
+          bore --version
+
+      - name: Cài đặt cloudflared (HTTP tunnel cho File Manager)
         run: |
           curl -L -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           cloudflared version
 
-      - name: Cài đặt ttyd (Web Terminal)
-        run: |
-          wget -qO ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64
-          chmod +x ttyd
-          sudo mv ttyd /usr/local/bin/
-
-      - name: Cài đặt File Browser (File Manager)
+      - name: Cài đặt File Browser
         run: |
           curl -fsSL https://github.com/filebrowser/filebrowser/releases/latest/download/linux-amd64-filebrowser.tar.gz -o filebrowser.tar.gz
           tar xzf filebrowser.tar.gz
           sudo mv filebrowser /usr/local/bin/
           filebrowser version
 
-      - name: Tạo user và thư mục làm việc
+      - name: Cấu hình SSH
         run: |
-          sudo useradd -m -s /bin/bash devuser
-          echo "devuser:password" | sudo chpasswd
-          sudo usermod -aG sudo devuser
-          echo "devuser ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/devuser
+          SSH_USER="${{ github.event.inputs.ssh_user }}"
+          SSH_PASS="${{ github.event.inputs.ssh_password }}"
 
-          sudo mkdir -p /home/workspace
-          sudo chown devuser:devuser /home/workspace
+          if id "$SSH_USER" &>/dev/null; then
+            echo "ℹ️ User $SSH_USER đã tồn tại, đặt lại mật khẩu..."
+            echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
+          else
+            echo "🆕 Tạo user $SSH_USER..."
+            sudo useradd -m -s /bin/bash "$SSH_USER"
+            echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
+            sudo usermod -aG sudo "$SSH_USER"
+          fi
+
+          sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo systemctl restart ssh
 
       - name: Cấu hình File Browser
         run: |
-          cat > /home/runner/filebrowser.json << 'EOF'
-          {
-            "port": 8081,
-            "baseURL": "/files",
-            "address": "127.0.0.1",
-            "root": "/home/workspace",
-            "auth.method": "noauth",
-            "branding.name": "VPS Files",
-            "commands": [],
-            "shell": ""
-          }
-          EOF
+          FILE_PASS="${{ github.event.inputs.file_password }}"
+          if [ -z "$FILE_PASS" ]; then
+            FILE_PASS="1234"
+          fi
+
+          # Khởi tạo database
+          filebrowser config init --database /home/runner/filebrowser.db
+          # Thêm user admin với mật khẩu
+          filebrowser users add admin "$FILE_PASS" --database /home/runner/filebrowser.db --perm.admin
+
+          # Tạo thư mục làm việc
+          mkdir -p /home/workspace
+          sudo chown runner:runner /home/workspace
+
+          # Cấu hình
+          filebrowser config set --root /home/workspace --database /home/runner/filebrowser.db
+          filebrowser config set --port 8081 --database /home/runner/filebrowser.db
+          filebrowser config set --address 127.0.0.1 --database /home/runner/filebrowser.db
 
       - name: Chạy dịch vụ và tạo tunnel
         run: |
-          # Tùy chọn bảo vệ terminal
-          if [ -n "${{ github.event.inputs.terminal_user }}" ] && [ -n "${{ github.event.inputs.terminal_password }}" ]; then
-            AUTH_OPTS="-c ${{ github.event.inputs.terminal_user }}:${{ github.event.inputs.terminal_password }}"
-          else
-            AUTH_OPTS=""
-          fi
-
-          # Khởi động Terminal (port 8080) & File Manager (port 8081)
-          ttyd -p 8080 $AUTH_OPTS sudo -u devuser bash &
-          filebrowser -c /home/runner/filebrowser.json &
-
-          # Chờ dịch vụ sẵn sàng
-          sleep 3
-
-          # Tạo 2 Cloudflare Tunnel
-          cloudflared tunnel --url http://localhost:8080 > tunnel_terminal.log 2>&1 &
+          # === File Browser + Cloudflare Tunnel ===
+          filebrowser --database /home/runner/filebrowser.db &
+          sleep 2
           cloudflared tunnel --url http://localhost:8081 > tunnel_files.log 2>&1 &
-
           sleep 5
-
-          TERMINAL_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel_terminal.log | head -1)
           FILES_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel_files.log | head -1)
+
+          # === SSH Tunnel qua bore ===
+          bore local 22 --to bore.pub > bore_ssh.log 2>&1 &
+          sleep 5
+          BORE_PORT=$(grep -oP 'bore\.pub:\K[0-9]+' bore_ssh.log | head -1)
+
+          if [ -z "$BORE_PORT" ]; then
+            echo "❌ Không lấy được bore port. Log:"
+            cat bore_ssh.log
+            exit 1
+          fi
 
           echo "=============================================="
           echo "✅ VPS tạm thời đã sẵn sàng!"
           echo ""
-          echo "🌐 Terminal:    $TERMINAL_URL"
-          echo "📁 File Manager: $FILES_URL"
-          if [ -n "${{ github.event.inputs.terminal_user }}" ]; then
-            echo "👤 Đăng nhập: ${{ github.event.inputs.terminal_user }}"
-            echo "🔑 Mật khẩu: ${{ github.event.inputs.terminal_password }}"
-          fi
+          echo "📁 File Manager:  $FILES_URL"
+          echo "   👤 User:       admin"
+          echo "   🔐 Mật khẩu:   ${{ github.event.inputs.file_password }}"
           echo ""
-          echo "⏱️  Thời gian tồn tại: ${{ steps.check_runtime.outputs.max_runtime }} phút"
+          echo "💻 SSH:           ssh -p $BORE_PORT ${{ github.event.inputs.ssh_user }}@bore.pub"
+          echo "   🔑 Mật khẩu:   ${{ github.event.inputs.ssh_password }}"
+          echo ""
+          echo "⏱️  Thời gian:     ${{ steps.check_runtime.outputs.max_runtime }} phút"
           echo "=============================================="
 
-          # Lưu URL ra file để tham khảo
-          echo "TERMINAL_URL=$TERMINAL_URL" > /home/runner/vps_info.txt
-          echo "FILES_URL=$FILES_URL" >> /home/runner/vps_info.txt
+          # Lưu lại để debug nếu cần
+          echo "FILES_URL=$FILES_URL" > /home/runner/vps_info.txt
+          echo "BORE_PORT=$BORE_PORT" >> /home/runner/vps_info.txt
 
-      - name: Giữ VPS hoạt động đến khi hết thời gian
+      - name: Giữ VPS hoạt động
         run: |
           MAX_RUNTIME=${{ steps.check_runtime.outputs.max_runtime }}
-          echo "⏳ VPS sẽ tồn tại thêm $MAX_RUNTIME phút."
-          SLEEP_SECONDS=$(( MAX_RUNTIME * 60 - 60 ))
+          echo "⏳ VPS sẽ tự hủy sau $MAX_RUNTIME phút."
+          SLEEP_SECONDS=$(( MAX_RUNTIME * 60 - 90 ))   # Trừ hao thời gian khởi động
           if [ $SLEEP_SECONDS -gt 0 ]; then
             sleep $SLEEP_SECONDS
           fi
