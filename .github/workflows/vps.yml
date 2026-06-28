@@ -38,17 +38,15 @@ jobs:
           if [ "$MAX" -gt 350 ]; then MAX=350; fi
           echo "max=$MAX" >> $GITHUB_OUTPUT
 
-      - name: Setup environment (SSH + bore)
+      - name: Setup and run SSH + bore tunnel (single step)
         run: |
-          # Cài đặt công cụ cần thiết (nhanh nhất có thể)
+          # ----- Cài đặt nhanh -----
           sudo apt update -qq && sudo apt install -y -qq openssh-server curl wget
 
-          # Tải bore (TCP tunnel miễn phí, không giới hạn)
           wget -q "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-unknown-linux-musl.tar.gz" -O bore.tar.gz
           tar xzf bore.tar.gz
           sudo mv bore /usr/local/bin/
 
-          # Tạo user và cấu hình SSH
           SSH_USER="${{ github.event.inputs.ssh_user }}"
           SSH_PASS="${{ github.event.inputs.ssh_password }}"
 
@@ -61,39 +59,39 @@ jobs:
             sudo usermod -aG sudo "$SSH_USER"
           fi
 
-          # Bật xác thực bằng mật khẩu
           sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo systemctl restart ssh
 
-      - name: Start bore tunnel & show connection
-        run: |
-          # Mở tunnel TCP port 22 đến bore.pub
-          bore local 22 --to bore.pub > bore.log 2>&1 &
+          # ----- Khởi động bore tunnel (nền) -----
+          nohup bore local 22 --to bore.pub > bore.log 2>&1 &
+          BORE_PID=$!
+          echo "Bore PID: $BORE_PID"
+
+          # Chờ tunnel khởi tạo
           sleep 5
 
           BORE_PORT=$(grep -oP 'bore\.pub:\K[0-9]+' bore.log | head -1)
           if [ -z "$BORE_PORT" ]; then
-            echo "❌ Failed to get bore port. Log:"
+            echo "❌ Không lấy được cổng bore. Log:"
             cat bore.log
             exit 1
           fi
 
           echo "=============================================="
-          echo "✅ VPS is ready!"
+          echo "✅ VPS sẵn sàng!"
           echo ""
-          echo "💻 SSH command:"
-          echo "   ssh -p $BORE_PORT ${{ github.event.inputs.ssh_user }}@bore.pub"
-          echo ""
-          echo "🔑 Password: ${{ github.event.inputs.ssh_password }}"
-          echo "⏱️  Max runtime: ${{ steps.runtime.outputs.max }} minutes"
+          echo "💻 SSH:"
+          echo "   ssh -p $BORE_PORT $SSH_USER@bore.pub"
+          echo "🔑 Password: $SSH_PASS"
+          echo "⏱️  Sẽ tự hủy sau ${{ steps.runtime.outputs.max }} phút"
           echo "=============================================="
 
-      - name: Keep alive until time expires
-        run: |
+          # ----- Giữ VPS sống (và giữ bore chạy) -----
           MAX=${{ steps.runtime.outputs.max }}
-          SLEEP_SEC=$(( MAX * 60 - 60 ))   # trừ 1 phút để dọn dẹp
+          SLEEP_SEC=$(( MAX * 60 - 30 ))
           if [ $SLEEP_SEC -gt 0 ]; then
             sleep $SLEEP_SEC
           fi
-          echo "🛑 Time's up. VPS will be destroyed."
+          echo "🛑 Hết thời gian, kết thúc."
+        shell: bash
