@@ -1,18 +1,18 @@
-name: Temporary VPS (SSH via localhost.run)
+name: Temporary VPS (SSH via serveo/bore)
 
 on:
   workflow_dispatch:
     inputs:
       ssh_user:
-        description: 'SSH username'
+        description: '👤 SSH username'
         required: true
         default: 'runner'
       ssh_password:
-        description: 'SSH password'
+        description: '🔑 SSH password'
         required: true
         default: 'MySecurePass123'
       max_runtime:
-        description: 'Max runtime (minutes, max 350)'
+        description: '⏱️ Max runtime (minutes, max 350)'
         required: true
         default: '330'
         type: choice
@@ -38,16 +38,16 @@ jobs:
           if [ "$MAX" -gt 350 ]; then MAX=350; fi
           echo "max=$MAX" >> $GITHUB_OUTPUT
 
-      - name: Setup SSH and start tunnel
+      - name: Setup SSH and create tunnel (serveo → bore fallback)
         run: |
-          set -e  # Dừng ngay nếu có lỗi
-          echo ">>> Bắt đầu cài đặt..."
-          sudo apt update -qq && sudo apt install -y -qq openssh-server curl
+          set -e
+          echo ">>> Cài đặt..."
+          sudo apt update -qq && sudo apt install -y -qq openssh-server curl wget
 
           SSH_USER="${{ github.event.inputs.ssh_user }}"
           SSH_PASS="${{ github.event.inputs.ssh_password }}"
 
-          echo ">>> Tạo/cập nhật user $SSH_USER..."
+          echo ">>> Tạo user $SSH_USER..."
           if id "$SSH_USER" &>/dev/null; then
             echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
           else
@@ -61,32 +61,44 @@ jobs:
           sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo systemctl restart ssh
 
-          echo ">>> Tạo tunnel localhost.run..."
-          mkdir -p /tmp/sshkey
-          ssh-keygen -t rsa -f /tmp/sshkey/id_rsa -N "" -q
-          chmod 600 /tmp/sshkey/id_rsa
-
+          # ===== THỬ SERVEO TRƯỚC =====
+          echo ">>> Thử serveo.net..."
           nohup ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 \
-            -R 0:localhost:22 \
-            -i /tmp/sshkey/id_rsa \
-            nokey@localhost.run > /tmp/lhr.log 2>&1 &
-          LHR_PID=$!
-          echo "Tunnel PID: $LHR_PID"
-
-          sleep 8
-          LHR_PORT=$(grep -oP 'localhost\.run:\K[0-9]+' /tmp/lhr.log | head -1)
-
-          if [ -z "$LHR_PORT" ]; then
-            echo ">>> LỖI: Không lấy được cổng. Log tunnel:"
-            cat /tmp/lhr.log
-            exit 1
+            -R 0:localhost:22 serveo.net > /tmp/serveo.log 2>&1 &
+          SERVEO_PID=$!
+          sleep 10
+          SERVEO_PORT=$(grep -oP 'serveo\.net:\K[0-9]+' /tmp/serveo.log | head -1)
+          if [ -n "$SERVEO_PORT" ]; then
+            echo "✅ Serveo tunnel active: serveo.net:$SERVEO_PORT"
+            SSH_HOST="serveo.net"
+            SSH_PORT="$SERVEO_PORT"
+          else
+            echo "⚠️ Serveo không trả về cổng, thử bore..."
+            kill $SERVEO_PID 2>/dev/null || true
+            # ===== BORE FALLBACK =====
+            wget -q "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-unknown-linux-musl.tar.gz" -O bore.tar.gz
+            tar xzf bore.tar.gz && sudo mv bore /usr/local/bin/
+            nohup bore local 22 --to bore.pub > /tmp/bore.log 2>&1 &
+            BORE_PID=$!
+            sleep 10
+            BORE_PORT=$(grep -oP 'bore\.pub:\K[0-9]+' /tmp/bore.log | head -1)
+            if [ -n "$BORE_PORT" ]; then
+              echo "✅ Bore tunnel active: bore.pub:$BORE_PORT"
+              SSH_HOST="bore.pub"
+              SSH_PORT="$BORE_PORT"
+            else
+              echo "❌ Cả hai tunnel đều thất bại."
+              cat /tmp/serveo.log /tmp/bore.log
+              exit 1
+            fi
           fi
 
           echo "=============================================="
-          echo "✅ VPS đã sẵn sàng!"
+          echo "✅ VPS sẵn sàng!"
           echo ""
-          echo "ssh -p $LHR_PORT $SSH_USER@localhost.run"
-          echo "Password: $SSH_PASS"
+          echo "💻 SSH command:"
+          echo "   ssh -p $SSH_PORT $SSH_USER@$SSH_HOST"
+          echo "🔑 Password: $SSH_PASS"
           echo "⏱️ Tồn tại tối đa: ${{ steps.runtime.outputs.max }} phút"
           echo "=============================================="
 
