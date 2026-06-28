@@ -1,16 +1,8 @@
-name: Temporary VPS (SSH via serveo/bore)
+name: Temporary VPS (tmate - copy & paste)
 
 on:
   workflow_dispatch:
     inputs:
-      ssh_user:
-        description: '👤 SSH username'
-        required: true
-        default: 'runner'
-      ssh_password:
-        description: '🔑 SSH password'
-        required: true
-        default: 'MySecurePass123'
       max_runtime:
         description: '⏱️ Max runtime (minutes, max 350)'
         required: true
@@ -38,73 +30,14 @@ jobs:
           if [ "$MAX" -gt 350 ]; then MAX=350; fi
           echo "max=$MAX" >> $GITHUB_OUTPUT
 
-      - name: Setup SSH and create tunnel (serveo → bore fallback)
+      - name: Start tmate session (detached, no auth)
+        uses: mxschmitt/action-tmate@v3
+        with:
+          detached: true
+          # Không giới hạn truy cập -> tmate sinh key ngẫu nhiên và in ra connection string
+
+      - name: Keep VPS alive
         run: |
-          set -e
-          echo ">>> Cài đặt..."
-          sudo apt update -qq && sudo apt install -y -qq openssh-server curl wget
-
-          SSH_USER="${{ github.event.inputs.ssh_user }}"
-          SSH_PASS="${{ github.event.inputs.ssh_password }}"
-
-          echo ">>> Tạo user $SSH_USER..."
-          if id "$SSH_USER" &>/dev/null; then
-            echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
-          else
-            sudo useradd -m -s /bin/bash "$SSH_USER"
-            echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
-            sudo usermod -aG sudo "$SSH_USER"
-          fi
-
-          echo ">>> Cấu hình SSH..."
-          sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo systemctl restart ssh
-
-          # ===== THỬ SERVEO TRƯỚC =====
-          echo ">>> Thử serveo.net..."
-          nohup ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 \
-            -R 0:localhost:22 serveo.net > /tmp/serveo.log 2>&1 &
-          SERVEO_PID=$!
-          sleep 10
-          SERVEO_PORT=$(grep -oP 'serveo\.net:\K[0-9]+' /tmp/serveo.log | head -1)
-          if [ -n "$SERVEO_PORT" ]; then
-            echo "✅ Serveo tunnel active: serveo.net:$SERVEO_PORT"
-            SSH_HOST="serveo.net"
-            SSH_PORT="$SERVEO_PORT"
-          else
-            echo "⚠️ Serveo không trả về cổng, thử bore..."
-            kill $SERVEO_PID 2>/dev/null || true
-            # ===== BORE FALLBACK =====
-            wget -q "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-unknown-linux-musl.tar.gz" -O bore.tar.gz
-            tar xzf bore.tar.gz && sudo mv bore /usr/local/bin/
-            nohup bore local 22 --to bore.pub > /tmp/bore.log 2>&1 &
-            BORE_PID=$!
-            sleep 10
-            BORE_PORT=$(grep -oP 'bore\.pub:\K[0-9]+' /tmp/bore.log | head -1)
-            if [ -n "$BORE_PORT" ]; then
-              echo "✅ Bore tunnel active: bore.pub:$BORE_PORT"
-              SSH_HOST="bore.pub"
-              SSH_PORT="$BORE_PORT"
-            else
-              echo "❌ Cả hai tunnel đều thất bại."
-              cat /tmp/serveo.log /tmp/bore.log
-              exit 1
-            fi
-          fi
-
-          echo "=============================================="
-          echo "✅ VPS sẵn sàng!"
-          echo ""
-          echo "💻 SSH command:"
-          echo "   ssh -p $SSH_PORT $SSH_USER@$SSH_HOST"
-          echo "🔑 Password: $SSH_PASS"
-          echo "⏱️ Tồn tại tối đa: ${{ steps.runtime.outputs.max }} phút"
-          echo "=============================================="
-
-          echo ">>> Giữ VPS sống..."
-          SLEEP_SEC=$(( ${{ steps.runtime.outputs.max }} * 60 - 30 ))
-          if [ $SLEEP_SEC -gt 0 ]; then
-            sleep $SLEEP_SEC
-          fi
-          echo ">>> Hết thời gian, kết thúc."
+          echo "⏳ VPS sẽ tồn tại ${{ steps.runtime.outputs.max }} phút."
+          sleep $(( ${{ steps.runtime.outputs.max }} * 60 - 60 ))
+          echo "🛑 Hết thời gian, VPS sẽ bị hủy."
