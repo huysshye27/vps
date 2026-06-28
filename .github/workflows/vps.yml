@@ -1,8 +1,16 @@
-name: Temporary VPS (tmate - copy & paste)
+name: Temporary VPS (Ngrok SSH)
 
 on:
   workflow_dispatch:
     inputs:
+      ssh_user:
+        description: '👤 SSH username'
+        required: true
+        default: 'runner'
+      ssh_password:
+        description: '🔑 SSH password'
+        required: true
+        default: 'MySecurePass123'
       max_runtime:
         description: '⏱️ Max runtime (minutes, max 350)'
         required: true
@@ -30,14 +38,73 @@ jobs:
           if [ "$MAX" -gt 350 ]; then MAX=350; fi
           echo "max=$MAX" >> $GITHUB_OUTPUT
 
-      - name: Start tmate session (detached, no auth)
-        uses: mxschmitt/action-tmate@v3
-        with:
-          detached: true
-          # Không giới hạn truy cập -> tmate sinh key ngẫu nhiên và in ra connection string
-
-      - name: Keep VPS alive
+      - name: Setup SSH + Ngrok tunnel (single step)
         run: |
-          echo "⏳ VPS sẽ tồn tại ${{ steps.runtime.outputs.max }} phút."
-          sleep $(( ${{ steps.runtime.outputs.max }} * 60 - 60 ))
-          echo "🛑 Hết thời gian, VPS sẽ bị hủy."
+          set -e
+          echo ">>> Cài đặt công cụ..."
+          sudo apt update -qq && sudo apt install -y -qq openssh-server curl jq
+
+          SSH_USER="${{ github.event.inputs.ssh_user }}"
+          SSH_PASS="${{ github.event.inputs.ssh_password }}"
+
+          echo ">>> Tạo/cập nhật user $SSH_USER..."
+          if id "$SSH_USER" &>/dev/null; then
+            echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
+          else
+            sudo useradd -m -s /bin/bash "$SSH_USER"
+            echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
+            sudo usermod -aG sudo "$SSH_USER"
+          fi
+
+          echo ">>> Cấu hình SSH cho phép đăng nhập mật khẩu..."
+          sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo systemctl restart ssh
+
+          echo ">>> Cài đặt Ngrok..."
+          curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" \
+            | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt update -qq && sudo apt install -y -qq ngrok
+
+          echo ">>> Xác thực Ngrok (dùng token từ vars)..."
+          ngrok config add-authtoken "${{ vars.NGROK_AUTH_TOKEN }}"
+
+          echo ">>> Mở tunnel TCP 22..."
+          nohup ngrok tcp 22 --log=stdout > /tmp/ngrok.log 2>&1 &
+          sleep 5
+
+          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' | sed 's/tcp:\/\///')
+          if [ -z "$NGROK_URL" ]; then
+            echo "❌ Không lấy được tunnel. Log:"
+            cat /tmp/ngrok.log
+            exit 1
+          fi
+
+          SSH_HOST=$(echo "$NGROK_URL" | cut -d: -f1)
+          SSH_PORT=$(echo "$NGROK_URL" | cut -d: -f2)
+
+          echo "=============================================="
+          echo "✅ VPS đã sẵn sàng!"
+          echo ""
+          echo "💻 SSH command:"
+          echo "   ssh -p $SSH_PORT $SSH_USER@$SSH_HOST"
+          echo "🔑 Password: $SSH_PASS"
+          echo ""
+          echo "📱 Dùng app (Termius, JuiceSSH...):"
+          echo "   Host: $SSH_HOST"
+          echo "   Port: $SSH_PORT"
+          echo "   User: $SSH_USER"
+          echo "   Pass: $SSH_PASS"
+          echo ""
+          echo "⏱️ Tự hủy sau: ${{ steps.runtime.outputs.max }} phút"
+          echo "=============================================="
+
+          echo ">>> Giữ VPS sống..."
+          SLEEP_SEC=$(( ${{ steps.runtime.outputs.max }} * 60 - 30 ))
+          if [ $SLEEP_SEC -gt 0 ]; then
+            sleep $SLEEP_SEC
+          fi
+          echo "🛑 Hết giờ, VPS dừng."
+        shell: bash
