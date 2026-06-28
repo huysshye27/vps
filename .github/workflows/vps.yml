@@ -3,6 +3,15 @@ name: Temporary VPS (Ngrok SSH + Countdown)
 on:
   workflow_dispatch:
     inputs:
+      runner_os:
+        description: '💻 Hệ điều hành'
+        required: true
+        default: 'ubuntu-24.04'
+        type: choice
+        options:
+          - 'ubuntu-20.04'
+          - 'ubuntu-22.04'
+          - 'ubuntu-24.04'
       ssh_user:
         description: '👤 SSH username'
         required: true
@@ -11,6 +20,14 @@ on:
         description: '🔑 SSH password'
         required: true
         default: 'MySecurePass123'
+      ssh_port:
+        description: '🔌 SSH port (mặc định 22)'
+        required: true
+        default: '22'
+      timezone:
+        description: '🕒 Múi giờ (vd: Asia/Ho_Chi_Minh, UTC)'
+        required: true
+        default: 'UTC'
       max_runtime:
         description: '⏱️ Max runtime (minutes, max 350)'
         required: true
@@ -27,7 +44,7 @@ on:
 
 jobs:
   vps:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ github.event.inputs.runner_os }}
     timeout-minutes: 350
 
     steps:
@@ -42,12 +59,17 @@ jobs:
         env:
           SSH_USER: ${{ github.event.inputs.ssh_user }}
           SSH_PASS: ${{ github.event.inputs.ssh_password }}
+          SSH_PORT: ${{ github.event.inputs.ssh_port }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
           NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
+          TIMEZONE: ${{ github.event.inputs.timezone }}
         run: |
           set -e
           echo ">>> Cài đặt công cụ..."
           sudo apt update -qq && sudo apt install -y -qq openssh-server curl jq tmux
+
+          echo ">>> Cài đặt timezone $TIMEZONE..."
+          sudo timedatectl set-timezone "$TIMEZONE" || true
 
           echo ">>> Tạo/cập nhật user $SSH_USER..."
           if id "$SSH_USER" &>/dev/null; then
@@ -58,7 +80,9 @@ jobs:
             sudo usermod -aG sudo "$SSH_USER"
           fi
 
-          echo ">>> Cấu hình SSH cho phép đăng nhập mật khẩu..."
+          echo ">>> Cấu hình SSH port $SSH_PORT..."
+          sudo sed -i "s/^#Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
+          sudo sed -i "s/^Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
           sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo systemctl restart ssh
@@ -71,8 +95,8 @@ jobs:
           echo ">>> Xác thực Ngrok..."
           ngrok config add-authtoken "$NGROK_TOKEN"
 
-          echo ">>> Mở tunnel TCP 22..."
-          nohup ngrok tcp 22 --log=stdout > /tmp/ngrok.log 2>&1 &
+          echo ">>> Mở tunnel TCP $SSH_PORT..."
+          nohup ngrok tcp "$SSH_PORT" --log=stdout > /tmp/ngrok.log 2>&1 &
           sleep 5
 
           NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' | sed 's/tcp:\/\///')
@@ -83,13 +107,12 @@ jobs:
           fi
 
           SSH_HOST=$(echo "$NGROK_URL" | cut -d: -f1)
-          SSH_PORT=$(echo "$NGROK_URL" | cut -d: -f2)
+          SSH_PORT_REMOTE=$(echo "$NGROK_URL" | cut -d: -f2)
 
           # Tạo script countdown.sh
           cat > /home/runner/countdown.sh << 'SCRIPT'
           #!/bin/bash
-          MAX_MINUTES_PLACEHOLDER
-          END_TIME=$(( $(date +%s) + MAX_MINUTES_PLACEHOLDER * 60 ))
+          END_TIME=$(( $(date +%s) + MAX_MINUTES * 60 ))
           while true; do
             NOW=$(date +%s)
             REMAINING=$(( END_TIME - NOW ))
@@ -99,7 +122,7 @@ jobs:
             fi
             clear
             echo "========================================"
-            echo "  VPS BY TGHUY - ĐẾM NGƯỢC THỜI GIAN"
+            echo "  VPS TEMPORARY - ĐẾM NGƯỢC THỜI GIAN"
             echo "  Thời gian còn lại: $(( REMAINING / 60 )) phút $(( REMAINING % 60 )) giây"
             echo "========================================"
             echo ""
@@ -110,23 +133,25 @@ jobs:
           done
           SCRIPT
 
-          # Thay thế biến thời gian
-          sed -i "s/MAX_MINUTES_PLACEHOLDER/$MAX_MINUTES/g" /home/runner/countdown.sh
+          export MAX_MINUTES
           chmod +x /home/runner/countdown.sh
 
           # Khởi động tmux session tên "thoigian"
-          tmux new-session -d -s thoigian "/home/runner/countdown.sh"
+          tmux new-session -d -s thoigian /home/runner/countdown.sh
 
           echo "=============================================="
           echo "✅ VPS đã sẵn sàng!"
           echo ""
+          echo "🖥️  OS: ${{ github.event.inputs.runner_os }}"
+          echo "🕒 TZ: $TIMEZONE"
+          echo ""
           echo "💻 SSH command:"
-          echo "   ssh -p $SSH_PORT $SSH_USER@$SSH_HOST"
+          echo "   ssh -p $SSH_PORT_REMOTE $SSH_USER@$SSH_HOST"
           echo "🔑 Password: $SSH_PASS"
           echo ""
           echo "📱 Dùng app (Termius, JuiceSSH...):"
           echo "   Host: $SSH_HOST"
-          echo "   Port: $SSH_PORT"
+          echo "   Port: $SSH_PORT_REMOTE"
           echo "   User: $SSH_USER"
           echo "   Pass: $SSH_PASS"
           echo ""
