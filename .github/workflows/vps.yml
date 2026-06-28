@@ -12,7 +12,7 @@ on:
         required: false
         default: ''
       max_runtime:
-        description: '⏱️ Thời gian chạy tối đa (phút)'
+        description: '⏱️ Thời gian chạy tối đa (phút, tối đa 350)'
         required: true
         default: '330'
         type: choice
@@ -28,9 +28,19 @@ on:
 jobs:
   vps:
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ github.event.inputs.max_runtime }}
+    timeout-minutes: 350   # Cố định ở mức tối đa, thực tế sẽ tắt sớm hơn theo input
 
     steps:
+      - name: Kiểm tra giới hạn max_runtime
+        id: check_runtime
+        run: |
+          MAX_RUNTIME=${{ github.event.inputs.max_runtime }}
+          if [ "$MAX_RUNTIME" -gt 350 ]; then
+            echo "⚠️ Giới hạn tối đa là 350 phút. Sẽ tự động giảm xuống 350."
+            MAX_RUNTIME=350
+          fi
+          echo "max_runtime=$MAX_RUNTIME" >> $GITHUB_OUTPUT
+
       - name: Cài đặt công cụ cơ bản
         run: |
           sudo apt update -qq
@@ -53,20 +63,18 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
           sudo mv filebrowser /usr/local/bin/
 
-      - name: Tạo user và chuẩn bị thư mục
+      - name: Tạo user và thư mục làm việc
         run: |
           sudo useradd -m -s /bin/bash devuser
           echo "devuser:password" | sudo chpasswd
           sudo usermod -aG sudo devuser
           echo "devuser ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/devuser
 
-          # Thư mục làm việc chung (root của file manager)
           sudo mkdir -p /home/workspace
           sudo chown devuser:devuser /home/workspace
 
       - name: Cấu hình File Browser
         run: |
-          # Tạo config cho filebrowser
           cat > /home/runner/filebrowser.json << 'EOF'
           {
             "port": 8081,
@@ -82,31 +90,27 @@ jobs:
 
       - name: Chạy dịch vụ và tạo tunnel
         run: |
-          # Bảo vệ terminal bằng auth nếu có
+          # Tùy chọn bảo vệ terminal
           if [ -n "${{ github.event.inputs.terminal_user }}" ] && [ -n "${{ github.event.inputs.terminal_password }}" ]; then
             AUTH_OPTS="-c ${{ github.event.inputs.terminal_user }}:${{ github.event.inputs.terminal_password }}"
           else
             AUTH_OPTS=""
           fi
 
-          # Chạy ttyd (terminal) trên port 8080, user devuser
+          # Khởi động Terminal (port 8080)
           ttyd -p 8080 $AUTH_OPTS sudo -u devuser bash &
           sleep 2
 
-          # Chạy filebrowser trên port 8081
+          # Khởi động File Manager (port 8081)
           filebrowser -c /home/runner/filebrowser.json &
           sleep 2
 
-          # Tạo Cloudflare Tunnel trỏ đến localhost:8080 (terminal). 
-          # Để truy cập cả hai, ta cần một reverse proxy đơn giản hoặc dùng cloudflared với ingress rules.
-          # Nhưng với TryCloudflare (miễn phí), mỗi tunnel chỉ trỏ đến 1 địa chỉ.
-          # Vì vậy ta sẽ chạy 2 tunnel riêng biệt: 1 cho terminal, 1 cho file manager.
+          # Tạo 2 Cloudflare Tunnel (TryCloudflare miễn phí)
           cloudflared tunnel --url http://localhost:8080 > tunnel_terminal.log 2>&1 &
           sleep 3
           cloudflared tunnel --url http://localhost:8081 > tunnel_files.log 2>&1 &
           sleep 3
 
-          # Lấy URL
           TERMINAL_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel_terminal.log | head -1)
           FILES_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel_files.log | head -1)
 
@@ -120,11 +124,18 @@ jobs:
             echo "🔑 Mật khẩu: ${{ github.event.inputs.terminal_password }}"
           fi
           echo ""
-          echo "⏱️  Tồn tại tối đa: ${{ github.event.inputs.max_runtime }} phút"
+          echo "⏱️  Thời gian tồn tại: ${{ steps.check_runtime.outputs.max_runtime }} phút"
           echo "=============================================="
 
-          # Giữ VPS sống
-          SLEEP_SECONDS=$(( ${{ github.event.inputs.max_runtime }} * 60 - 120 ))
+          # Lưu URL ra file để dùng sau nếu cần
+          echo "TERMINAL_URL=$TERMINAL_URL" > /home/runner/vps_info.txt
+          echo "FILES_URL=$FILES_URL" >> /home/runner/vps_info.txt
+
+      - name: Giữ VPS hoạt động
+        run: |
+          MAX_RUNTIME=${{ steps.check_runtime.outputs.max_runtime }}
+          echo "⏳ VPS sẽ tồn tại thêm $MAX_RUNTIME phút."
+          SLEEP_SECONDS=$(( MAX_RUNTIME * 60 - 60 ))   # Trừ hao 1 phút setup
           if [ $SLEEP_SECONDS -gt 0 ]; then
             sleep $SLEEP_SECONDS
           fi
