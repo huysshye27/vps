@@ -99,7 +99,7 @@ jobs:
             fi
             clear
             echo "========================================"
-            echo "  VPS TEMPORARY - ĐẾM NGƯỢC THỜI GIAN"
+            echo "  VPS BY TGHUY - ĐẾM NGƯỢC THỜI GIAN"
             echo "  Thời gian còn lại: $(( REMAINING / 60 )) phút $(( REMAINING % 60 )) giây"
             echo "========================================"
             echo ""
