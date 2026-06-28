@@ -1,4 +1,4 @@
-name: Temporary VPS (SSH via bore)
+name: Temporary VPS (SSH via localhost.run)
 
 on:
   workflow_dispatch:
@@ -38,20 +38,16 @@ jobs:
           if [ "$MAX" -gt 350 ]; then MAX=350; fi
           echo "max=$MAX" >> $GITHUB_OUTPUT
 
-      - name: Setup and run SSH + bore tunnel (single step)
+      - name: Setup & Run SSH (localhost.run tunnel)
         run: |
-          # ----- Cài đặt nhanh -----
-          sudo apt update -qq && sudo apt install -y -qq openssh-server curl wget
-
-          wget -q "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-unknown-linux-musl.tar.gz" -O bore.tar.gz
-          tar xzf bore.tar.gz
-          sudo mv bore /usr/local/bin/
+          # Cài đặt nhanh
+          sudo apt update -qq && sudo apt install -y -qq openssh-server curl
 
           SSH_USER="${{ github.event.inputs.ssh_user }}"
           SSH_PASS="${{ github.event.inputs.ssh_password }}"
 
+          # Tạo user nếu chưa có
           if id "$SSH_USER" &>/dev/null; then
-            echo "ℹ️ User $SSH_USER exists, resetting password..."
             echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
           else
             sudo useradd -m -s /bin/bash "$SSH_USER"
@@ -63,35 +59,42 @@ jobs:
           sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo systemctl restart ssh
 
-          # ----- Khởi động bore tunnel (nền) -----
-          nohup bore local 22 --to bore.pub > bore.log 2>&1 &
-          BORE_PID=$!
-          echo "Bore PID: $BORE_PID"
+          # Tạo key tạm để localhost.run không hỏi mật khẩu
+          mkdir -p /tmp/sshkey && ssh-keygen -t rsa -f /tmp/sshkey/id_rsa -N "" -q
+          chmod 600 /tmp/sshkey/id_rsa
 
-          # Chờ tunnel khởi tạo
-          sleep 5
+          # Mở reverse tunnel đến localhost.run (cổng 22 của GitHub → cổng ngẫu nhiên của localhost.run)
+          nohup ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 \
+            -R 0:localhost:22 \
+            -i /tmp/sshkey/id_rsa \
+            nokey@localhost.run > /tmp/lhr.log 2>&1 &
+          LHR_PID=$!
 
-          BORE_PORT=$(grep -oP 'bore\.pub:\K[0-9]+' bore.log | head -1)
-          if [ -z "$BORE_PORT" ]; then
-            echo "❌ Không lấy được cổng bore. Log:"
-            cat bore.log
+          # Chờ tunnel được tạo (thường mất 5-10 giây)
+          sleep 8
+
+          # Lấy cổng từ log (dòng chứa "localhost.run:xxxxx")
+          LHR_PORT=$(grep -oP 'localhost\.run:\K[0-9]+' /tmp/lhr.log | head -1)
+          if [ -z "$LHR_PORT" ]; then
+            echo "❌ Không thể tạo tunnel. Log:"
+            cat /tmp/lhr.log
             exit 1
           fi
 
           echo "=============================================="
-          echo "✅ VPS sẵn sàng!"
+          echo "✅ VPS đã sẵn sàng!"
           echo ""
           echo "💻 SSH:"
-          echo "   ssh -p $BORE_PORT $SSH_USER@bore.pub"
+          echo "   ssh -p $LHR_PORT $SSH_USER@localhost.run"
           echo "🔑 Password: $SSH_PASS"
-          echo "⏱️  Sẽ tự hủy sau ${{ steps.runtime.outputs.max }} phút"
+          echo "⏱️  Tự hủy sau ${{ steps.runtime.outputs.max }} phút"
           echo "=============================================="
 
-          # ----- Giữ VPS sống (và giữ bore chạy) -----
+          # Giữ job sống đúng thời gian yêu cầu
           MAX=${{ steps.runtime.outputs.max }}
           SLEEP_SEC=$(( MAX * 60 - 30 ))
           if [ $SLEEP_SEC -gt 0 ]; then
             sleep $SLEEP_SEC
           fi
-          echo "🛑 Hết thời gian, kết thúc."
+          echo "🛑 Hết giờ, VPS sẽ dừng."
         shell: bash
