@@ -1,4 +1,4 @@
-name: Temporary VPS (Ngrok SSH + Countdown)
+name: Temporary VPS (Ngrok - All Platforms)
 
 on:
   workflow_dispatch:
@@ -14,16 +14,27 @@ on:
           - 'ubuntu-24.04'
           - 'windows-latest'
           - 'windows-2022'
+          - 'macos-latest'
+          - 'macos-13'
+      connection_type:
+        description: '🌐 Giao thức (SSH = Dòng lệnh, RDP/VNC = Đồ họa)'
+        required: true
+        default: 'ssh'
+        type: choice
+        options:
+          - 'ssh'
+          - 'rdp'
+          - 'vnc'
       ssh_user:
-        description: '👤 SSH username'
+        description: '👤 Username'
         required: true
         default: 'runner'
       ssh_password:
-        description: '🔑 SSH password'
+        description: '🔑 Password'
         required: true
         default: 'MySecurePass123'
       enable_root_ssh:
-        description: '🚀 Cho phép đăng nhập root/Administrator?'
+        description: '🚀 Cho phép root/Administrator?'
         required: true
         default: 'no'
         type: choice
@@ -31,7 +42,7 @@ on:
           - 'yes'
           - 'no'
       ssh_port:
-        description: '🔌 SSH port (mặc định 22)'
+        description: '🔌 SSH port (Chỉ dùng nếu chọn SSH)'
         required: true
         default: '22'
       timezone:
@@ -66,33 +77,28 @@ jobs:
           if [ "$MAX" -gt 350 ]; then MAX=350; fi
           echo "max=$MAX" >> $GITHUB_OUTPUT
 
-      - name: Setup Linux VPS (Ngrok tunnel + Countdown)
+      # ==========================================
+      # 🐧 LINUX SETUP (SSH & XRDP)
+      # ==========================================
+      - name: Setup Linux VPS
         if: runner.os == 'Linux'
         env:
           SSH_USER: ${{ github.event.inputs.ssh_user }}
           SSH_PASS: ${{ github.event.inputs.ssh_password }}
           ENABLE_ROOT: ${{ github.event.inputs.enable_root_ssh }}
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
+          CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
           NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
           TIMEZONE: ${{ github.event.inputs.timezone }}
         run: |
           set -e
-          echo ">>> Cài đặt công cụ..."
-          sudo apt update -qq && sudo apt install -y -qq openssh-server curl jq tmux
-
-          echo ">>> Cài đặt timezone $TIMEZONE..."
           sudo timedatectl set-timezone "$TIMEZONE" || true
-
-          # ---- Cấu hình user & root ----
+          
           if [ "$ENABLE_ROOT" = "yes" ]; then
-            echo ">>> Cho phép root SSH..."
             echo "root:$SSH_PASS" | sudo chpasswd
-            sudo sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-            sudo sed -i 's/^PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
           fi
-
-          echo ">>> Tạo/cập nhật user $SSH_USER..."
+          
           if id "$SSH_USER" &>/dev/null; then
             echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
           else
@@ -100,109 +106,68 @@ jobs:
             echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
             sudo usermod -aG sudo "$SSH_USER"
           fi
-
-          # Cho phép sudo không cần password
           echo "$SSH_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$SSH_USER
 
-          echo ">>> Cấu hình SSH port $SSH_PORT..."
-          sudo sed -i "s/^#Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
-          sudo sed -i "s/^Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
-          sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo systemctl restart ssh
+          if [ "$CONNECTION_TYPE" = "rdp" ] || [ "$CONNECTION_TYPE" = "vnc" ]; then
+            echo ">>> Cài đặt XFCE4 Desktop và XRDP..."
+            sudo apt update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt install -y -qq xfce4 xfce4-goodies xrdp curl jq
+            sudo systemctl enable xrdp
+            sudo adduser xrdp ssl-cert
+            echo xfce4-session > /home/$SSH_USER/.xsession
+            sudo chown $SSH_USER:$SSH_USER /home/$SSH_USER/.xsession
+            sudo systemctl restart xrdp
+            NGROK_PORT=3389
+            PROT_NAME="RDP"
+          else
+            echo ">>> Cấu hình SSH..."
+            sudo apt update -qq && sudo apt install -y -qq openssh-server curl jq tmux
+            sudo sed -i "s/^#Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
+            sudo sed -i "s/^Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
+            sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+            sudo systemctl restart ssh
+            NGROK_PORT=$SSH_PORT
+            PROT_NAME="SSH"
+          fi
 
-          # ---- Cài Ngrok ----
-          echo ">>> Cài đặt Ngrok..."
+          echo ">>> Khởi động Ngrok..."
           curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" | sudo tee /etc/apt/sources.list.d/ngrok.list
           sudo apt update -qq && sudo apt install -y -qq ngrok
-
-          echo ">>> Xác thực Ngrok..."
           ngrok config add-authtoken "$NGROK_TOKEN"
-
-          echo ">>> Mở tunnel TCP $SSH_PORT..."
-          nohup ngrok tcp "$SSH_PORT" --log=stdout > /tmp/ngrok.log 2>&1 &
+          nohup ngrok tcp $NGROK_PORT --log=stdout > /tmp/ngrok.log 2>&1 &
           sleep 5
 
           NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' | sed 's/tcp:\/\///')
-          if [ -z "$NGROK_URL" ]; then
-            echo "❌ Không lấy được tunnel. Log:"
-            cat /tmp/ngrok.log
-            exit 1
-          fi
-
-          SSH_HOST=$(echo "$NGROK_URL" | cut -d: -f1)
-          SSH_PORT_REMOTE=$(echo "$NGROK_URL" | cut -d: -f2)
-
-          # ---- Script đếm ngược ----
-          cat > /home/runner/countdown.sh << 'SCRIPT'
-          #!/bin/bash
-          END_TIME=$(( $(date +%s) + MAX_MINUTES * 60 ))
-          while true; do
-            NOW=$(date +%s)
-            REMAINING=$(( END_TIME - NOW ))
-            if [ $REMAINING -le 0 ]; then
-              echo "Hết giờ! VPS sẽ tắt."
-              break
-            fi
-            clear
-            echo "========================================"
-            echo "  VPS TEMPORARY - ĐẾM NGƯỢC THỜI GIAN"
-            echo "  Thời gian còn lại: $(( REMAINING / 60 )) phút $(( REMAINING % 60 )) giây"
-            echo "========================================"
-            echo ""
-            echo "  👉 Nhấn Ctrl+B sau đó nhấn D để thoát"
-            echo "     (không dùng lệnh exit)"
-            echo ""
-            sleep 30
-          done
-          SCRIPT
-
-          export MAX_MINUTES
-          chmod +x /home/runner/countdown.sh
-          tmux new-session -d -s thoigian /home/runner/countdown.sh
-
-          # ---- Thông báo kết nối ----
+          
           echo "=============================================="
-          echo "✅ VPS đã sẵn sàng!"
-          echo ""
-          echo "🖥️  OS: Linux (${{ github.event.inputs.runner_os }})"
-          echo "🕒 TZ: $TIMEZONE"
-          if [ "$ENABLE_ROOT" = "yes" ]; then
-            echo "🚀 Root SSH: ENABLED"
-          fi
-          echo ""
-          echo "💻 SSH command:"
-          echo "   ssh -p $SSH_PORT_REMOTE $SSH_USER@$SSH_HOST"
-          if [ "$ENABLE_ROOT" = "yes" ]; then
-            echo "   hoặc ssh -p $SSH_PORT_REMOTE root@$SSH_HOST"
-          fi
-          echo "🔑 Password: $SSH_PASS"
+          echo "✅ LINUX VPS SẴN SÀNG ($PROT_NAME)!"
+          echo "🖥️ OS: Ubuntu (${{ github.event.inputs.runner_os }})"
+          echo "👤 User: $SSH_USER"
+          echo "🔑 Pass: $SSH_PASS"
+          echo "🌐 Địa chỉ kết nối: $NGROK_URL"
           echo "=============================================="
 
-          for ((i=MAX_MINUTES; i>0; i--)); do
-            echo "⏱️  Thời gian còn lại: $i phút"
-            sleep 60
-          done
-          echo "🛑 Hết giờ, VPS dừng."
+          for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
 
-      - name: Setup Windows VPS (Ngrok tunnel + Countdown)
+      # ==========================================
+      # 🪟 WINDOWS SETUP (SSH & RDP)
+      # ==========================================
+      - name: Setup Windows VPS
         if: runner.os == 'Windows'
         env:
           SSH_USER: ${{ github.event.inputs.ssh_user }}
           SSH_PASS: ${{ github.event.inputs.ssh_password }}
           ENABLE_ROOT: ${{ github.event.inputs.enable_root_ssh }}
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
+          CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
           NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+          choco install ngrok -y --no-progress | Out-Null
 
-          Write-Host ">>> Cài đặt Ngrok qua Chocolatey..."
-          choco install ngrok -y --no-progress
-
-          Write-Host ">>> Cấu hình User & Password..."
           $Password = ConvertTo-SecureString $env:SSH_PASS -AsPlainText -Force
           if ($env:ENABLE_ROOT -eq "yes") {
               $TargetUser = "Administrator"
@@ -217,52 +182,96 @@ jobs:
               }
           }
 
-          Write-Host ">>> Cấu hình SSH Server (OpenSSH)..."
-          # Kích hoạt OpenSSH Server có sẵn trên GitHub Windows Runner
-          Start-Service sshd
-          Set-Service -Name sshd -StartupType 'Automatic'
-
-          # Đổi Port nếu không dùng 22
-          $SshdConfig = "$env:ProgramData\ssh\sshd_config"
-          if (Test-Path $SshdConfig) {
-              (Get-Content $SshdConfig) -replace '^#?Port .*', "Port $env:SSH_PORT" | Set-Content $SshdConfig
-              Restart-Service sshd
+          if ($env:CONNECTION_TYPE -eq 'rdp' -or $env:CONNECTION_TYPE -eq 'vnc') {
+              Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
+              Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
+              Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
+              $NgrokPort = 3389
+              $ProtName = "RDP"
+          } else {
+              Start-Service sshd
+              Set-Service -Name sshd -StartupType 'Automatic'
+              $SshdConfig = "$env:ProgramData\ssh\sshd_config"
+              if (Test-Path $SshdConfig) {
+                  (Get-Content $SshdConfig) -replace '^#?Port .*', "Port $env:SSH_PORT" | Set-Content $SshdConfig
+                  Restart-Service sshd
+              }
+              New-NetFirewallRule -Name "Open SSH Port" -DisplayName "Open SSH Port" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort $env:SSH_PORT | Out-Null
+              $NgrokPort = $env:SSH_PORT
+              $ProtName = "SSH"
           }
 
-          Write-Host ">>> Mở Firewall cho SSH port $env:SSH_PORT..."
-          New-NetFirewallRule -Name "Open SSH Port" -DisplayName "Open SSH Port" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort $env:SSH_PORT | Out-Null
-
-          Write-Host ">>> Khởi động Ngrok Tunnel..."
           ngrok config add-authtoken $env:NGROK_TOKEN
-          Start-Process -FilePath "ngrok" -ArgumentList "tcp $env:SSH_PORT" -NoNewWindow
+          Start-Process -FilePath "ngrok" -ArgumentList "tcp $NgrokPort" -NoNewWindow
           Start-Sleep -Seconds 5
 
           $Tunnels = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
           $NgrokUrl = $Tunnels.tunnels[0].public_url -replace "tcp://", ""
 
-          if ([string]::IsNullOrEmpty($NgrokUrl)) {
-              Write-Host "❌ Không lấy được tunnel. Kiểm tra lại NGROK_AUTH_TOKEN."
-              exit 1
-          }
-
-          $HostPort = $NgrokUrl -split ":"
-          $SshHost = $HostPort[0]
-          $SshPortRemote = $HostPort[1]
-
           Write-Host "=============================================="
-          Write-Host "✅ WINDOWS VPS ĐÃ SẴN SÀNG!"
-          Write-Host ""
+          Write-Host "✅ WINDOWS VPS SẴN SÀNG ($ProtName)!"
           Write-Host "🖥️ OS: Windows (${{ github.event.inputs.runner_os }})"
           Write-Host "👤 User: $TargetUser"
-          Write-Host ""
-          Write-Host "💻 SSH command:"
-          Write-Host "   ssh -p $SshPortRemote $TargetUser@$SshHost"
-          Write-Host "🔑 Password: $env:SSH_PASS"
+          Write-Host "🔑 Pass: $env:SSH_PASS"
+          Write-Host "🌐 Địa chỉ kết nối: $NgrokUrl"
           Write-Host "=============================================="
 
           $MaxMinutes = [int]$env:MAX_MINUTES
-          for ($i = $MaxMinutes; $i -gt 0; $i--) {
-              Write-Host "⏱️ Thời gian còn lại: $i phút"
-              Start-Sleep -Seconds 60
-          }
-          Write-Host "🛑 Hết giờ, VPS dừng."
+          for ($i = $MaxMinutes; $i -gt 0; $i--) { Write-Host "⏱️ $i phút..."; Start-Sleep -Seconds 60 }
+
+      # ==========================================
+      # 🍎 macOS SETUP (SSH & VNC)
+      # ==========================================
+      - name: Setup macOS VPS
+        if: runner.os == 'macOS'
+        env:
+          SSH_USER: ${{ github.event.inputs.ssh_user }}
+          SSH_PASS: ${{ github.event.inputs.ssh_password }}
+          CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
+          SSH_PORT: ${{ github.event.inputs.ssh_port }}
+          MAX_MINUTES: ${{ steps.runtime.outputs.max }}
+          NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
+        run: |
+          set -e
+          brew install jq --quiet
+          
+          if ! id "$SSH_USER" &>/dev/null; then
+              sudo sysadminctl -addUser "$SSH_USER" -password "$SSH_PASS" -admin
+          else
+              sudo dscl . -passwd /Users/"$SSH_USER" "$SSH_PASS"
+          fi
+
+          if [ "$CONNECTION_TYPE" = "rdp" ] || [ "$CONNECTION_TYPE" = "vnc" ]; then
+              echo ">>> Bật Screen Sharing (VNC)..."
+              sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -restart -agent -privs -all
+              sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -allowAccessFor -specifiedUsers
+              sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -users "$SSH_USER" -access -on -privs -all
+              NGROK_PORT=5900
+              PROT_NAME="VNC (Screen Sharing)"
+          else
+              echo ">>> Bật Remote Login (SSH)..."
+              sudo systemsetup -setremotelogin on
+              NGROK_PORT=22
+              PROT_NAME="SSH"
+          fi
+
+          echo ">>> Cài đặt Ngrok..."
+          curl -sSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-amd64.tgz -o ngrok.tgz
+          tar -xzf ngrok.tgz
+          sudo mv ngrok /usr/local/bin/
+
+          ngrok config add-authtoken "$NGROK_TOKEN"
+          nohup ngrok tcp $NGROK_PORT --log=stdout > /tmp/ngrok.log 2>&1 &
+          sleep 5
+
+          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' | sed 's/tcp:\/\///')
+
+          echo "=============================================="
+          echo "✅ macOS VPS SẴN SÀNG ($PROT_NAME)!"
+          echo "🖥️ OS: macOS (${{ github.event.inputs.runner_os }})"
+          echo "👤 User: $SSH_USER"
+          echo "🔑 Pass: $SSH_PASS"
+          echo "🌐 Địa chỉ kết nối: $NGROK_URL"
+          echo "=============================================="
+
+          for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
