@@ -163,7 +163,7 @@ jobs:
           CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
           NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
-        shell: powershell
+        shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           choco install ngrok -y --no-progress | Out-Null
