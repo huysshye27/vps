@@ -12,6 +12,8 @@ on:
           - 'ubuntu-20.04'
           - 'ubuntu-22.04'
           - 'ubuntu-24.04'
+          - 'windows-latest'
+          - 'windows-2022'
       ssh_user:
         description: '👤 SSH username'
         required: true
@@ -21,7 +23,7 @@ on:
         required: true
         default: 'MySecurePass123'
       enable_root_ssh:
-        description: '🚀 Cho phép đăng nhập root qua SSH?'
+        description: '🚀 Cho phép đăng nhập root/Administrator?'
         required: true
         default: 'no'
         type: choice
@@ -58,12 +60,14 @@ jobs:
     steps:
       - name: Check runtime
         id: runtime
+        shell: bash
         run: |
           MAX="${{ github.event.inputs.max_runtime }}"
           if [ "$MAX" -gt 350 ]; then MAX=350; fi
           echo "max=$MAX" >> $GITHUB_OUTPUT
 
-      - name: Setup SSH + Ngrok tunnel + Countdown
+      - name: Setup Linux VPS (Ngrok tunnel + Countdown)
+        if: runner.os == 'Linux'
         env:
           SSH_USER: ${{ github.event.inputs.ssh_user }}
           SSH_PASS: ${{ github.event.inputs.ssh_password }}
@@ -97,7 +101,7 @@ jobs:
             sudo usermod -aG sudo "$SSH_USER"
           fi
 
-          # Cho phép sudo không cần password (tiện cho cả user lẫn root nếu có)
+          # Cho phép sudo không cần password
           echo "$SSH_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$SSH_USER
 
           echo ">>> Cấu hình SSH port $SSH_PORT..."
@@ -162,10 +166,10 @@ jobs:
           echo "=============================================="
           echo "✅ VPS đã sẵn sàng!"
           echo ""
-          echo "🖥️  OS: ${{ github.event.inputs.runner_os }}"
+          echo "🖥️  OS: Linux (${{ github.event.inputs.runner_os }})"
           echo "🕒 TZ: $TIMEZONE"
           if [ "$ENABLE_ROOT" = "yes" ]; then
-            echo "🚀 Root SSH: ENABLED (có thể login bằng root)"
+            echo "🚀 Root SSH: ENABLED"
           fi
           echo ""
           echo "💻 SSH command:"
@@ -174,23 +178,91 @@ jobs:
             echo "   hoặc ssh -p $SSH_PORT_REMOTE root@$SSH_HOST"
           fi
           echo "🔑 Password: $SSH_PASS"
-          echo ""
-          echo "📱 Dùng app (Termius, JuiceSSH...):"
-          echo "   Host: $SSH_HOST"
-          echo "   Port: $SSH_PORT_REMOTE"
-          echo "   User: $SSH_USER (hoặc root nếu đã bật)"
-          echo "   Pass: $SSH_PASS"
-          echo ""
-          echo "⏱️  Tự hủy sau: $MAX_MINUTES phút"
-          echo "🕒 Đồng hồ đếm ngược (trong terminal):"
-          echo "   tmux attach -t thoigian"
-          echo "   (Nhấn Ctrl+B, D để thoát)"
           echo "=============================================="
 
-          # Bộ đếm trên Action log
           for ((i=MAX_MINUTES; i>0; i--)); do
             echo "⏱️  Thời gian còn lại: $i phút"
             sleep 60
           done
           echo "🛑 Hết giờ, VPS dừng."
-        shell: bash
+
+      - name: Setup Windows VPS (Ngrok tunnel + Countdown)
+        if: runner.os == 'Windows'
+        env:
+          SSH_USER: ${{ github.event.inputs.ssh_user }}
+          SSH_PASS: ${{ github.event.inputs.ssh_password }}
+          ENABLE_ROOT: ${{ github.event.inputs.enable_root_ssh }}
+          SSH_PORT: ${{ github.event.inputs.ssh_port }}
+          MAX_MINUTES: ${{ steps.runtime.outputs.max }}
+          NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ">>> Cài đặt Ngrok qua Chocolatey..."
+          choco install ngrok -y --no-progress
+
+          Write-Host ">>> Cấu hình User & Password..."
+          $Password = ConvertTo-SecureString $env:SSH_PASS -AsPlainText -Force
+          if ($env:ENABLE_ROOT -eq "yes") {
+              $TargetUser = "Administrator"
+              Set-LocalUser -Name "Administrator" -Password $Password
+          } else {
+              $TargetUser = $env:SSH_USER
+              if (Get-LocalUser -Name $TargetUser -ErrorAction SilentlyContinue) {
+                  Set-LocalUser -Name $TargetUser -Password $Password
+              } else {
+                  New-LocalUser -Name $TargetUser -Password $Password -FullName $TargetUser -Description "VPS User"
+                  Add-LocalGroupMember -Group "Administrators" -Member $TargetUser
+              }
+          }
+
+          Write-Host ">>> Cấu hình SSH Server (OpenSSH)..."
+          # Kích hoạt OpenSSH Server có sẵn trên GitHub Windows Runner
+          Start-Service sshd
+          Set-Service -Name sshd -StartupType 'Automatic'
+
+          # Đổi Port nếu không dùng 22
+          $SshdConfig = "$env:ProgramData\ssh\sshd_config"
+          if (Test-Path $SshdConfig) {
+              (Get-Content $SshdConfig) -replace '^#?Port .*', "Port $env:SSH_PORT" | Set-Content $SshdConfig
+              Restart-Service sshd
+          }
+
+          Write-Host ">>> Mở Firewall cho SSH port $env:SSH_PORT..."
+          New-NetFirewallRule -Name "Open SSH Port" -DisplayName "Open SSH Port" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort $env:SSH_PORT | Out-Null
+
+          Write-Host ">>> Khởi động Ngrok Tunnel..."
+          ngrok config add-authtoken $env:NGROK_TOKEN
+          Start-Process -FilePath "ngrok" -ArgumentList "tcp $env:SSH_PORT" -NoNewWindow
+          Start-Sleep -Seconds 5
+
+          $Tunnels = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
+          $NgrokUrl = $Tunnels.tunnels[0].public_url -replace "tcp://", ""
+
+          if ([string]::IsNullOrEmpty($NgrokUrl)) {
+              Write-Host "❌ Không lấy được tunnel. Kiểm tra lại NGROK_AUTH_TOKEN."
+              exit 1
+          }
+
+          $HostPort = $NgrokUrl -split ":"
+          $SshHost = $HostPort[0]
+          $SshPortRemote = $HostPort[1]
+
+          Write-Host "=============================================="
+          Write-Host "✅ WINDOWS VPS ĐÃ SẴN SÀNG!"
+          Write-Host ""
+          Write-Host "🖥️ OS: Windows (${{ github.event.inputs.runner_os }})"
+          Write-Host "👤 User: $TargetUser"
+          Write-Host ""
+          Write-Host "💻 SSH command:"
+          Write-Host "   ssh -p $SshPortRemote $TargetUser@$SshHost"
+          Write-Host "🔑 Password: $env:SSH_PASS"
+          Write-Host "=============================================="
+
+          $MaxMinutes = [int]$env:MAX_MINUTES
+          for ($i = $MaxMinutes; $i -gt 0; $i--) {
+              Write-Host "⏱️ Thời gian còn lại: $i phút"
+              Start-Sleep -Seconds 60
+          }
+          Write-Host "🛑 Hết giờ, VPS dừng."
