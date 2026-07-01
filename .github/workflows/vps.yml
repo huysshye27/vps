@@ -30,9 +30,9 @@ on:
         required: true
         default: 'runner'
       ssh_password:
-        description: '🔑 Password'
+        description: '🔑 Password (Phải có hoa, thường, số, ký tự đặc biệt)'
         required: true
-        default: 'MySecurePass123'
+        default: 'Vps@Secure2026!'
       enable_root_ssh:
         description: '🚀 Cho phép root/runneradmin?'
         required: true
@@ -170,19 +170,28 @@ jobs:
 
           $Password = ConvertTo-SecureString $env:SSH_PASS -AsPlainText -Force
           
-          # GitHub Actions Windows mặc định dùng tài khoản 'runneradmin' thay cho 'Administrator'
           if ($env:ENABLE_ROOT -eq "yes") {
               $TargetUser = "runneradmin"
           } else {
               $TargetUser = $env:SSH_USER
           }
           
-          # Nếu user đã tồn tại thì đổi pass, nếu chưa thì tạo mới và cho vào group Administrators
-          if (Get-LocalUser -Name $TargetUser -ErrorAction SilentlyContinue) {
-              Set-LocalUser -Name $TargetUser -Password $Password
-          } else {
-              New-LocalUser -Name $TargetUser -Password $Password -FullName $TargetUser -Description "VPS User"
-              Add-LocalGroupMember -Group "Administrators" -Member $TargetUser
+          try {
+              if (Get-LocalUser -Name $TargetUser -ErrorAction SilentlyContinue) {
+                  Set-LocalUser -Name $TargetUser -Password $Password
+              } else {
+                  New-LocalUser -Name $TargetUser -Password $Password -FullName $TargetUser -Description "VPS User"
+                  Add-LocalGroupMember -Group "Administrators" -Member $TargetUser
+              }
+          } catch {
+              Write-Host "=========================================================================="
+              Write-Host "❌ LỖI TẠO USER: Mật khẩu bạn nhập quá yếu hoặc vi phạm chính sách Windows!"
+              Write-Host "👉 YÊU CẦU BẮT BUỘC:"
+              Write-Host "   1. Dài tối thiểu 8 ký tự."
+              Write-Host "   2. Phải có: Chữ HOA, chữ thường, SỐ và Ký tự đặc biệt (VD: @, !, #)."
+              Write-Host "   3. KHÔNG ĐƯỢC chứa tên user (vd: user là 'runner' thì pass không có chữ 'runner')."
+              Write-Host "=========================================================================="
+              exit 1
           }
 
           if ($env:CONNECTION_TYPE -eq 'rdp' -or $env:CONNECTION_TYPE -eq 'vnc') {
