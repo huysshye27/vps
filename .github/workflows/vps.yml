@@ -34,7 +34,7 @@ on:
         required: true
         default: 'MySecurePass123'
       enable_root_ssh:
-        description: '🚀 Cho phép root/Administrator?'
+        description: '🚀 Cho phép root/runneradmin?'
         required: true
         default: 'no'
         type: choice
@@ -169,17 +169,20 @@ jobs:
           choco install ngrok -y --no-progress | Out-Null
 
           $Password = ConvertTo-SecureString $env:SSH_PASS -AsPlainText -Force
+          
+          # GitHub Actions Windows mặc định dùng tài khoản 'runneradmin' thay cho 'Administrator'
           if ($env:ENABLE_ROOT -eq "yes") {
-              $TargetUser = "Administrator"
-              Set-LocalUser -Name "Administrator" -Password $Password
+              $TargetUser = "runneradmin"
           } else {
               $TargetUser = $env:SSH_USER
-              if (Get-LocalUser -Name $TargetUser -ErrorAction SilentlyContinue) {
-                  Set-LocalUser -Name $TargetUser -Password $Password
-              } else {
-                  New-LocalUser -Name $TargetUser -Password $Password -FullName $TargetUser -Description "VPS User"
-                  Add-LocalGroupMember -Group "Administrators" -Member $TargetUser
-              }
+          }
+          
+          # Nếu user đã tồn tại thì đổi pass, nếu chưa thì tạo mới và cho vào group Administrators
+          if (Get-LocalUser -Name $TargetUser -ErrorAction SilentlyContinue) {
+              Set-LocalUser -Name $TargetUser -Password $Password
+          } else {
+              New-LocalUser -Name $TargetUser -Password $Password -FullName $TargetUser -Description "VPS User"
+              Add-LocalGroupMember -Group "Administrators" -Member $TargetUser
           }
 
           if ($env:CONNECTION_TYPE -eq 'rdp' -or $env:CONNECTION_TYPE -eq 'vnc') {
