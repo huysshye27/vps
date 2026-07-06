@@ -1,4 +1,4 @@
-name: Temporary VPS (Tailscale - All Platforms)
+name: Temporary VPS (Ngrok - All Platforms)
 
 on:
   workflow_dispatch:
@@ -42,7 +42,7 @@ on:
           - 'yes'
           - 'no'
       ssh_port:
-        description: '🔌 SSH port'
+        description: '🔌 SSH port (Chỉ dùng nếu chọn SSH)'
         required: true
         default: '22'
       timezone:
@@ -62,18 +62,6 @@ on:
           - '300'
           - '330'
           - '350'
-      auto_rerun:
-        description: '🔄 Tự động Re-run (Treo VPS liên tục)'
-        required: true
-        default: 'no'
-        type: choice
-        options:
-          - 'yes'
-          - 'no'
-
-permissions:
-  actions: write
-  contents: read
 
 jobs:
   vps:
@@ -90,7 +78,7 @@ jobs:
           echo "max=$MAX" >> $GITHUB_OUTPUT
 
       # ==========================================
-      # 🐧 LINUX SETUP
+      # 🐧 LINUX SETUP (SSH & XRDP)
       # ==========================================
       - name: Setup Linux VPS
         if: runner.os == 'Linux'
@@ -101,10 +89,8 @@ jobs:
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
           CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
-          TAILSCALE_KEY: ${{ vars.TAILSCALE_AUTHKEY }}
+          NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
           TIMEZONE: ${{ github.event.inputs.timezone }}
-          AUTO_RERUN: ${{ github.event.inputs.auto_rerun }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
           sudo timedatectl set-timezone "$TIMEZONE" || true
@@ -131,7 +117,8 @@ jobs:
             echo xfce4-session > /home/$SSH_USER/.xsession
             sudo chown $SSH_USER:$SSH_USER /home/$SSH_USER/.xsession
             sudo systemctl restart xrdp
-            PROT_NAME="RDP (Port 3389)"
+            NGROK_PORT=3389
+            PROT_NAME="RDP"
           else
             echo ">>> Cấu hình SSH..."
             sudo apt update -qq && sudo apt install -y -qq openssh-server curl jq tmux
@@ -139,42 +126,32 @@ jobs:
             sudo sed -i "s/^Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
             sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
             sudo systemctl restart ssh
-            PROT_NAME="SSH (Port $SSH_PORT)"
+            NGROK_PORT=$SSH_PORT
+            PROT_NAME="SSH"
           fi
 
-          echo ">>> Cài đặt Tailscale..."
-          curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --authkey="$TAILSCALE_KEY" --hostname="github-linux-vps"
-          sleep 2
-          TS_IP=$(tailscale ip -4)
+          echo ">>> Khởi động Ngrok..."
+          curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt update -qq && sudo apt install -y -qq ngrok
+          ngrok config add-authtoken "$NGROK_TOKEN"
+          nohup ngrok tcp $NGROK_PORT --log=stdout > /tmp/ngrok.log 2>&1 &
+          sleep 5
+
+          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' | sed 's/tcp:\/\///')
           
           echo "=============================================="
           echo "✅ LINUX VPS SẴN SÀNG ($PROT_NAME)!"
           echo "🖥️ OS: Ubuntu (${{ github.event.inputs.runner_os }})"
           echo "👤 User: $SSH_USER"
           echo "🔑 Pass: $SSH_PASS"
-          echo "🌐 TẤT CẢ PORT ĐÃ MỞ TẠI IP: $TS_IP"
-          echo "💡 Game Server IP: $TS_IP:<Port_Game_Của_Bạn>"
+          echo "🌐 Địa chỉ kết nối: $NGROK_URL"
           echo "=============================================="
 
           for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
 
-          if [ "$AUTO_RERUN" = "yes" ]; then
-            echo "🔄 Đang kích hoạt tự động Re-run..."
-            gh workflow run "$GITHUB_WORKFLOW" --ref "$GITHUB_REF" \
-              -f runner_os="${{ github.event.inputs.runner_os }}" \
-              -f connection_type="${{ github.event.inputs.connection_type }}" \
-              -f ssh_user="${{ github.event.inputs.ssh_user }}" \
-              -f ssh_password="${{ github.event.inputs.ssh_password }}" \
-              -f enable_root_ssh="${{ github.event.inputs.enable_root_ssh }}" \
-              -f ssh_port="${{ github.event.inputs.ssh_port }}" \
-              -f timezone="${{ github.event.inputs.timezone }}" \
-              -f max_runtime="${{ github.event.inputs.max_runtime }}" \
-              -f auto_rerun="yes"
-          fi
-
       # ==========================================
-      # 🪟 WINDOWS SETUP
+      # 🪟 WINDOWS SETUP (SSH & RDP)
       # ==========================================
       - name: Setup Windows VPS
         if: runner.os == 'Windows'
@@ -185,15 +162,19 @@ jobs:
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
           CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
-          TAILSCALE_KEY: ${{ vars.TAILSCALE_AUTHKEY }}
-          AUTO_RERUN: ${{ github.event.inputs.auto_rerun }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          choco install ngrok -y --no-progress | Out-Null
 
           $Password = ConvertTo-SecureString $env:SSH_PASS -AsPlainText -Force
-          if ($env:ENABLE_ROOT -eq "yes") { $TargetUser = "runneradmin" } else { $TargetUser = $env:SSH_USER }
+          
+          if ($env:ENABLE_ROOT -eq "yes") {
+              $TargetUser = "runneradmin"
+          } else {
+              $TargetUser = $env:SSH_USER
+          }
           
           try {
               if (Get-LocalUser -Name $TargetUser -ErrorAction SilentlyContinue) {
@@ -203,7 +184,13 @@ jobs:
                   Add-LocalGroupMember -Group "Administrators" -Member $TargetUser
               }
           } catch {
-              Write-Host "❌ LỖI MẬT KHẨU YẾU"
+              Write-Host "=========================================================================="
+              Write-Host "❌ LỖI TẠO USER: Mật khẩu bạn nhập quá yếu hoặc vi phạm chính sách Windows!"
+              Write-Host "👉 YÊU CẦU BẮT BUỘC:"
+              Write-Host "   1. Dài tối thiểu 8 ký tự."
+              Write-Host "   2. Phải có: Chữ HOA, chữ thường, SỐ và Ký tự đặc biệt (VD: @, !, #)."
+              Write-Host "   3. KHÔNG ĐƯỢC chứa tên user (vd: user là 'runner' thì pass không có chữ 'runner')."
+              Write-Host "=========================================================================="
               exit 1
           }
 
@@ -211,7 +198,8 @@ jobs:
               Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
               Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
               Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
-              $ProtName = "RDP (Port 3389)"
+              $NgrokPort = 3389
+              $ProtName = "RDP"
           } else {
               Start-Service sshd
               Set-Service -Name sshd -StartupType 'Automatic'
@@ -221,45 +209,30 @@ jobs:
                   Restart-Service sshd
               }
               New-NetFirewallRule -Name "Open SSH Port" -DisplayName "Open SSH Port" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort $env:SSH_PORT | Out-Null
-              $ProtName = "SSH (Port $env:SSH_PORT)"
+              $NgrokPort = $env:SSH_PORT
+              $ProtName = "SSH"
           }
 
-          Write-Host ">>> Cài đặt Tailscale..."
-          choco install tailscale -y --no-progress | Out-Null
+          ngrok config add-authtoken $env:NGROK_TOKEN
+          Start-Process -FilePath "ngrok" -ArgumentList "tcp $NgrokPort" -NoNewWindow
           Start-Sleep -Seconds 5
-          $env:Path += ";C:\Program Files\Tailscale"
-          tailscale up --authkey=$env:TAILSCALE_KEY --hostname="github-windows-vps"
-          Start-Sleep -Seconds 2
-          $TsIp = tailscale ip -4
+
+          $Tunnels = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
+          $NgrokUrl = $Tunnels.tunnels[0].public_url -replace "tcp://", ""
 
           Write-Host "=============================================="
           Write-Host "✅ WINDOWS VPS SẴN SÀNG ($ProtName)!"
           Write-Host "🖥️ OS: Windows (${{ github.event.inputs.runner_os }})"
           Write-Host "👤 User: $TargetUser"
           Write-Host "🔑 Pass: $env:SSH_PASS"
-          Write-Host "🌐 TẤT CẢ PORT ĐÃ MỞ TẠI IP: $TsIp"
-          Write-Host "💡 Game Server IP: $TsIp`:<Port_Game_Của_Bạn>"
+          Write-Host "🌐 Địa chỉ kết nối: $NgrokUrl"
           Write-Host "=============================================="
 
           $MaxMinutes = [int]$env:MAX_MINUTES
           for ($i = $MaxMinutes; $i -gt 0; $i--) { Write-Host "⏱️ $i phút..."; Start-Sleep -Seconds 60 }
 
-          if ($env:AUTO_RERUN -eq "yes") {
-              Write-Host "🔄 Đang kích hoạt tự động Re-run..."
-              gh workflow run $env:GITHUB_WORKFLOW --ref $env:GITHUB_REF `
-                -f runner_os="${{ github.event.inputs.runner_os }}" `
-                -f connection_type="${{ github.event.inputs.connection_type }}" `
-                -f ssh_user="${{ github.event.inputs.ssh_user }}" `
-                -f ssh_password="${{ github.event.inputs.ssh_password }}" `
-                -f enable_root_ssh="${{ github.event.inputs.enable_root_ssh }}" `
-                -f ssh_port="${{ github.event.inputs.ssh_port }}" `
-                -f timezone="${{ github.event.inputs.timezone }}" `
-                -f max_runtime="${{ github.event.inputs.max_runtime }}" `
-                -f auto_rerun="yes"
-          }
-
       # ==========================================
-      # 🍎 macOS SETUP
+      # 🍎 macOS SETUP (SSH & VNC)
       # ==========================================
       - name: Setup macOS VPS
         if: runner.os == 'macOS'
@@ -269,11 +242,10 @@ jobs:
           CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
-          TAILSCALE_KEY: ${{ vars.TAILSCALE_AUTHKEY }}
-          AUTO_RERUN: ${{ github.event.inputs.auto_rerun }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
         run: |
           set -e
+          brew install jq --quiet
           
           if ! id "$SSH_USER" &>/dev/null; then
               sudo sysadminctl -addUser "$SSH_USER" -password "$SSH_PASS" -admin
@@ -286,41 +258,32 @@ jobs:
               sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -restart -agent -privs -all
               sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -allowAccessFor -specifiedUsers
               sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -users "$SSH_USER" -access -on -privs -all
-              PROT_NAME="VNC (Screen Sharing - Port 5900)"
+              NGROK_PORT=5900
+              PROT_NAME="VNC (Screen Sharing)"
           else
               echo ">>> Bật Remote Login (SSH)..."
               sudo systemsetup -setremotelogin on
-              PROT_NAME="SSH (Port 22)"
+              NGROK_PORT=22
+              PROT_NAME="SSH"
           fi
 
-          echo ">>> Cài đặt Tailscale..."
-          brew install tailscale --quiet
-          sudo tailscaled > /tmp/tailscaled.log 2>&1 &
+          echo ">>> Cài đặt Ngrok..."
+          curl -sSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-amd64.tgz -o ngrok.tgz
+          tar -xzf ngrok.tgz
+          sudo mv ngrok /usr/local/bin/
+
+          ngrok config add-authtoken "$NGROK_TOKEN"
+          nohup ngrok tcp $NGROK_PORT --log=stdout > /tmp/ngrok.log 2>&1 &
           sleep 5
-          sudo tailscale up --authkey="$TAILSCALE_KEY" --hostname="github-macos-vps"
-          sleep 2
-          TS_IP=$(sudo tailscale ip -4)
+
+          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' | sed 's/tcp:\/\///')
 
           echo "=============================================="
           echo "✅ macOS VPS SẴN SÀNG ($PROT_NAME)!"
           echo "🖥️ OS: macOS (${{ github.event.inputs.runner_os }})"
           echo "👤 User: $SSH_USER"
           echo "🔑 Pass: $SSH_PASS"
-          echo "🌐 TẤT CẢ PORT ĐÃ MỞ TẠI IP: $TS_IP"
-          echo "💡 Game Server IP: $TS_IP:<Port_Game_Của_Bạn>"
+          echo "🌐 Địa chỉ kết nối: $NGROK_URL"
           echo "=============================================="
 
           for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
-
-          if [ "$AUTO_RERUN" = "yes" ]; then
-            echo "🔄 Đang kích hoạt tự động Re-run..."
-            gh workflow run "$GITHUB_WORKFLOW" --ref "$GITHUB_REF" \
-              -f runner_os="${{ github.event.inputs.runner_os }}" \
-              -f connection_type="${{ github.event.inputs.connection_type }}" \
-              -f ssh_user="${{ github.event.inputs.ssh_user }}" \
-              -f ssh_password="${{ github.event.inputs.ssh_password }}" \
-              -f enable_root_ssh="${{ github.event.inputs.enable_root_ssh }}" \
-              -f ssh_port="${{ github.event.inputs.ssh_port }}" \
-              -f max_runtime="${{ github.event.inputs.max_runtime }}" \
-              -f auto_rerun="yes"
-          fi
