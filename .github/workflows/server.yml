@@ -1,241 +1,269 @@
-name: Terraria Server (Vanilla/TML + Auto Re-run)
+name: Terraria TShock via Node Relay
 
 on:
   workflow_dispatch:
     inputs:
-      server_type:
-        description: '🎮 Loại server'
+      relay_host:
+        description: "Host/IP của Node hosting PikaMC"
         required: true
-        default: 'vanilla'
+        default: "your-node-host.example.com"
+
+      relay_port:
+        description: "Port public của Node hosting PikaMC"
+        required: true
+        default: "7777"
+
+      tshock_version:
+        description: "TShock version: latest hoặc tag ví dụ v5.2.4"
+        required: true
+        default: "latest"
+
+      world_name:
+        description: "World name"
+        required: true
+        default: "friends"
+
+      world_size:
+        description: "1=Small, 2=Medium, 3=Large"
+        required: true
+        default: "1"
         type: choice
         options:
-          - 'vanilla'
-          - 'tmodloader'
-      version:
-        description: '📦 Phiên bản (vd: 1.4.5.6 cho vanilla hoặc v2022.09.47.0 cho TML)'
+          - "1"
+          - "2"
+          - "3"
+
+      max_players:
+        description: "Max players"
         required: true
-        default: '1.4.5.6'
-      ssh_user:
-        description: '👤 SSH username'
+        default: "8"
+
+      server_password:
+        description: "Terraria password, để trống nếu không cần"
+        required: false
+        default: ""
+
+      run_minutes:
+        description: "Thời gian chạy. GitHub-hosted nên để <= 330"
         required: true
-        default: 'runner'
-      ssh_password:
-        description: '🔑 SSH password'
+        default: "330"
+
+      auto_restart:
+        description: "Lưu data xong tự chạy workflow mới"
         required: true
-        default: 'SecurePass123'
-      timezone:
-        description: '🕒 Múi giờ'
-        required: true
-        default: 'UTC'
-      max_runtime:
-        description: '⏱️ Max runtime (phút, tối đa 350)'
-        required: true
-        default: '330'
+        default: "false"
         type: choice
         options:
-          - '60'
-          - '120'
-          - '180'
-          - '240'
-          - '300'
-          - '330'
-          - '350'
-      auto_rerun:
-        description: '🔄 Tự động re-run & khôi phục world?'
-        required: true
-        default: 'no'
-        type: choice
-        options:
-          - 'yes'
-          - 'no'
+          - "true"
+          - "false"
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: terraria-tshock-relay
+  cancel-in-progress: false
 
 jobs:
-  terraria:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 350
-    permissions:
-      actions: write
-      contents: read
+  server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+
+    env:
+      PORT: "7777"
+      WORLD_DIR: "data/worlds"
+      CONFIG_DIR: "data/config"
+      LOG_DIR: "data/logs"
+      SERVER_DIR: "server"
 
     steps:
-      - name: Check runtime
-        id: runtime
-        shell: bash
-        run: |
-          MAX="${{ github.event.inputs.max_runtime }}"
-          if [ "$MAX" -gt 350 ]; then MAX=350; fi
-          echo "max=$MAX" >> $GITHUB_OUTPUT
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Restore previous data (if auto re-run)
-        if: github.event.inputs.auto_rerun == 'yes'
-        uses: actions/download-artifact@v4
-        with:
-          name: terraria-data
-          path: /tmp/restore
-        continue-on-error: true
-
-      - name: Extract saved data
-        if: github.event.inputs.auto_rerun == 'yes'
+      - name: Validate inputs
         run: |
-          if [ -f /tmp/restore/terraria-data.tar.gz ]; then
-            sudo tar -xzf /tmp/restore/terraria-data.tar.gz -C /
-            echo "✅ Khôi phục dữ liệu thành công"
-          else
-            echo "ℹ️ Không có dữ liệu cũ"
+          set -e
+
+          RUN_MINUTES="${{ github.event.inputs.run_minutes }}"
+
+          if ! echo "$RUN_MINUTES" | grep -Eq '^[0-9]+$'; then
+            echo "run_minutes must be number"
+            exit 1
           fi
 
-      - name: Setup environment
-        run: |
-          sudo apt update -qq
-          sudo apt install -y -qq openssh-server curl jq tmux unzip wget
-          sudo timedatectl set-timezone "${{ github.event.inputs.timezone }}" || true
-
-          USER="${{ github.event.inputs.ssh_user }}"
-          PASS="${{ github.event.inputs.ssh_password }}"
-          if id "$USER" &>/dev/null; then
-            echo "$USER:$PASS" | sudo chpasswd
-          else
-            sudo useradd -m -s /bin/bash "$USER"
-            echo "$USER:$PASS" | sudo chpasswd
-            sudo usermod -aG sudo "$USER"
-          fi
-          echo "$USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$USER
-          sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo systemctl restart ssh
-
-      - name: Install Server (Vanilla)
-        if: github.event.inputs.server_type == 'vanilla' && ( github.event.inputs.auto_rerun != 'yes' || ! -d '/opt/terraria' )
-        run: |
-          VER="${{ github.event.inputs.version }}"
-          echo ">>> Tải Terraria Server $VER..."
-          sudo mkdir -p /opt/terraria
-          wget -q "https://terraria.org/api/download/pc-dedicated-server/terraria-server-${VER}.zip" -O /tmp/terraria.zip
-          sudo unzip -o /tmp/terraria.zip -d /opt/terraria
-          DIR=$(find /opt/terraria -maxdepth 2 -type f -name 'TerrariaServer*' 2>/dev/null | head -1 | xargs dirname)
-          if [ -n "$DIR" ]; then
-            sudo chmod -R +x "$DIR"
-            echo "✅ Server được cài tại $DIR"
-          else
-            echo "⚠️ Không tìm thấy file thực thi TerrariaServer"
+          if [ "$RUN_MINUTES" -gt 330 ]; then
+            echo "Use run_minutes <= 330 on GitHub-hosted runner"
+            exit 1
           fi
 
-      - name: Install Server (tModLoader)
-        if: github.event.inputs.server_type == 'tmodloader' && ( github.event.inputs.auto_rerun != 'yes' || ! -d '/opt/tmodloader' )
-        run: |
-          VER="${{ github.event.inputs.version }}"
-          echo ">>> Tải tModLoader $VER..."
-          sudo mkdir -p /opt/tmodloader
-          wget -q "https://github.com/tModLoader/tModLoader/releases/download/${VER}/tModLoader.zip" -O /tmp/tmod.zip
-          sudo unzip -o /tmp/tmod.zip -d /opt/tmodloader
-          sudo chmod +x /opt/tmodloader/tModLoaderServer* 2>/dev/null || true
-          echo "✅ tModLoader đã sẵn sàng"
-
-      - name: Start server in tmux
-        run: |
-          USER_HOME="/home/${{ github.event.inputs.ssh_user }}"
-          WORLD_DIR="$USER_HOME/.local/share/Terraria/Worlds"
-          mkdir -p "$WORLD_DIR"
-
-          # Nếu re-run và đã có world -> tự động dùng world đầu tiên
-          if [ "${{ github.event.inputs.auto_rerun }}" == "yes" ] && [ "$(ls -A "$WORLD_DIR"/*.wld 2>/dev/null)" ]; then
-            WORLD_NAME=$(basename "$(ls "$WORLD_DIR"/*.wld | head -1)" .wld)
-            cat > "$USER_HOME/serverconfig.txt" << EOF
-            world=$WORLD_DIR/$WORLD_NAME.wld
-            maxplayers=16
-            port=7777
-            password=
-            EOF
-            CONFIG_ARG="-config $USER_HOME/serverconfig.txt"
-          else
-            CONFIG_ARG=""
+          if [ ! -f server.js ]; then
+            echo "server.js not found in repository root"
+            exit 1
           fi
 
-          if [ "${{ github.event.inputs.server_type }}" == "vanilla" ]; then
-            SERVER_DIR=$(find /opt/terraria -maxdepth 2 -type f -name 'TerrariaServer' | head -1 | xargs dirname)
-            EXEC="./TerrariaServer"
+      - name: Prepare folders
+        run: |
+          mkdir -p "$WORLD_DIR" "$CONFIG_DIR" "$LOG_DIR" "$SERVER_DIR"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip jq curl
+
+      - name: Download TShock
+        run: |
+          set -e
+
+          VERSION="${{ github.event.inputs.tshock_version }}"
+
+          if [ "$VERSION" = "latest" ]; then
+            API_URL="https://api.github.com/repos/Pryaxis/TShock/releases/latest"
           else
-            SERVER_DIR="/opt/tmodloader"
-            EXEC="./tModLoaderServer"
+            API_URL="https://api.github.com/repos/Pryaxis/TShock/releases/tags/$VERSION"
           fi
+
+          URL="$(curl -s "$API_URL" | jq -r '.assets[] | select(.name | test("linux-x64.*Release.zip$|linux-x64-Release.zip$")) | .browser_download_url' | head -n 1)"
+
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "Could not find TShock linux-x64 release asset"
+            echo "API URL: $API_URL"
+            exit 1
+          fi
+
+          echo "Downloading: $URL"
+          curl -L "$URL" -o tshock.zip
+          unzip -q tshock.zip -d "$SERVER_DIR"
+          chmod +x "$SERVER_DIR/TShock.Server"
+
+      - name: Start TShock
+        run: |
+          set -e
+
+          WORLD_FILE="$WORLD_DIR/${{ github.event.inputs.world_name }}.wld"
+          PASSWORD="${{ github.event.inputs.server_password }}"
 
           cd "$SERVER_DIR"
-          sudo -u "${{ github.event.inputs.ssh_user }}" tmux new-session -d -s terraria "$EXEC $CONFIG_ARG"
-          echo "✅ Server đã được khởi động trong tmux session 'terraria'"
 
-      - name: Setup Ngrok & expose SSH
-        run: |
-          curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-          echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-          sudo apt update -qq && sudo apt install -y -qq ngrok
-          ngrok config add-authtoken "${{ vars.NGROK_AUTH_TOKEN }}"
-          nohup ngrok tcp 22 --log=stdout > /tmp/ngrok.log 2>&1 &
-          sleep 5
-          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' | sed 's/tcp:\/\///')
-          echo "SSH_HOST=$(echo $NGROK_URL | cut -d: -f1)" >> $GITHUB_ENV
-          echo "SSH_PORT=$(echo $NGROK_URL | cut -d: -f2)" >> $GITHUB_ENV
+          ARGS=(
+            -world "../$WORLD_FILE"
+            -autocreate "${{ github.event.inputs.world_size }}"
+            -port "$PORT"
+            -maxplayers "${{ github.event.inputs.max_players }}"
+            -configpath "../$CONFIG_DIR/tshock"
+            -logpath "../$LOG_DIR"
+          )
 
-      - name: Show connection info
-        run: |
-          echo "=============================================="
-          echo "✅ TERARIA SERVER SẴN SÀNG"
-          echo "🎮 Loại: ${{ github.event.inputs.server_type }} (v${{ github.event.inputs.version }})"
-          echo "🌐 SSH: ssh -p $SSH_PORT ${{ github.event.inputs.ssh_user }}@$SSH_HOST"
-          echo "🔑 Pass: ${{ github.event.inputs.ssh_password }}"
-          echo ""
-          echo "🕹️ Sau khi SSH, dùng: tmux attach -t terraria"
-          echo "   (Ctrl+B, D để thoát)"
-          echo "📡 Để chơi game, từ máy của bạn chạy:"
-          echo "   ssh -L 7777:localhost:7777 -p $SSH_PORT ${{ github.event.inputs.ssh_user }}@$SSH_HOST"
-          echo "   rồi kết nối Terraria đến localhost:7777"
-          echo "=============================================="
+          if [ -n "$PASSWORD" ]; then
+            ARGS+=(-pass "$PASSWORD")
+          fi
 
-      - name: Maintain until timeout
+          ./TShock.Server "${ARGS[@]}" > ../tshock.log 2>&1 &
+          echo $! > ../tshock.pid
+
+          cd ..
+
+          echo "TShock started"
+          sleep 8
+          tail -n 80 tshock.log || true
+
+      - name: Start tunnel client to Node relay
         env:
-          MAX_MINUTES: ${{ steps.runtime.outputs.max }}
-          AUTO_RERUN: ${{ github.event.inputs.auto_rerun }}
+          MODE: client
+          RELAY_HOST: ${{ github.event.inputs.relay_host }}
+          RELAY_PORT: ${{ github.event.inputs.relay_port }}
+          RELAY_TOKEN: ${{ secrets.RELAY_TOKEN }}
+          LOCAL_HOST: "127.0.0.1"
+          LOCAL_PORT: "7777"
         run: |
-          START=$SECONDS
-          MAX_SEC=$((MAX_MINUTES*60))
-          while true; do
-            NOW=$SECONDS
-            REMAINING=$((MAX_SEC - (NOW - START)))
-            if [ "$AUTO_RERUN" = "yes" ] && [ $REMAINING -lt 300 ]; then
-              echo "🔄 Chuẩn bị re-run..."
-              break
+          set -e
+
+          if [ -z "$RELAY_TOKEN" ]; then
+            echo "Missing GitHub secret: RELAY_TOKEN"
+            exit 1
+          fi
+
+          node server.js client > tunnel.log 2>&1 &
+          echo $! > tunnel.pid
+
+          echo "Tunnel client started"
+          sleep 5
+          tail -n 80 tunnel.log || true
+
+      - name: Run until timeout
+        run: |
+          RUN_MINUTES="${{ github.event.inputs.run_minutes }}"
+          RUN_SECONDS=$((RUN_MINUTES * 60))
+
+          echo "Server running for $RUN_MINUTES minutes"
+          echo "Friends should connect to:"
+          echo "${{ github.event.inputs.relay_host }}:${{ github.event.inputs.relay_port }}"
+
+          sleep "$RUN_SECONDS"
+
+      - name: Stop server safely
+        if: always()
+        run: |
+          set +e
+
+          echo "Stopping tunnel client..."
+          if [ -f tunnel.pid ]; then
+            kill "$(cat tunnel.pid)" 2>/dev/null || true
+          fi
+
+          echo "Stopping TShock..."
+          if [ -f tshock.pid ]; then
+            PID="$(cat tshock.pid)"
+            kill -INT "$PID" 2>/dev/null || true
+            sleep 30
+
+            if kill -0 "$PID" 2>/dev/null; then
+              kill -TERM "$PID" 2>/dev/null || true
+              sleep 10
             fi
-            if [ $REMAINING -le 0 ]; then break; fi
-            echo "⏱️ Còn $((REMAINING/60)) phút..."
-            sleep 60
-          done
 
-      - name: Save data before re-run
-        if: github.event.inputs.auto_rerun == 'yes'
+            if kill -0 "$PID" 2>/dev/null; then
+              kill -KILL "$PID" 2>/dev/null || true
+            fi
+          fi
+
+          echo "Last TShock log:"
+          tail -n 120 tshock.log || true
+
+          echo "Last tunnel log:"
+          tail -n 120 tunnel.log || true
+
+      - name: Save data to repository
+        if: always()
         run: |
-          sudo tar -czf /tmp/terraria-data.tar.gz \
-            -C / opt/terraria opt/tmodloader \
-            home/${{ github.event.inputs.ssh_user }}/.local/share/Terraria \
-            home/${{ github.event.inputs.ssh_user }}/serverconfig.txt 2>/dev/null || true
-        continue-on-error: true
+          set +e
 
-      - name: Upload artifact for re-run
-        if: github.event.inputs.auto_rerun == 'yes'
-        uses: actions/upload-artifact@v4
-        with:
-          name: terraria-data
-          path: /tmp/terraria-data.tar.gz
-          retention-days: 1
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Trigger re-run
-        if: github.event.inputs.auto_rerun == 'yes'
+          git add data
+
+          if git diff --cached --quiet; then
+            echo "No data changes to commit"
+          else
+            git commit -m "Save Terraria TShock data"
+            git pull --rebase || true
+            git push
+          fi
+
+      - name: Trigger next run
+        if: ${{ always() && github.event.inputs.auto_restart == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh workflow run "server.yml" \
             --ref "${{ github.ref_name }}" \
-            -f server_type="${{ github.event.inputs.server_type }}" \
-            -f version="${{ github.event.inputs.version }}" \
-            -f ssh_user="${{ github.event.inputs.ssh_user }}" \
-            -f ssh_password="${{ github.event.inputs.ssh_password }}" \
-            -f timezone="${{ github.event.inputs.timezone }}" \
-            -f max_runtime="${{ steps.runtime.outputs.max }}" \
-            -f auto_rerun="yes"
+            -f relay_host="${{ github.event.inputs.relay_host }}" \
+            -f relay_port="${{ github.event.inputs.relay_port }}" \
+            -f tshock_version="${{ github.event.inputs.tshock_version }}" \
+            -f world_name="${{ github.event.inputs.world_name }}" \
+            -f world_size="${{ github.event.inputs.world_size }}" \
+            -f max_players="${{ github.event.inputs.max_players }}" \
+            -f server_password="${{ github.event.inputs.server_password }}" \
+            -f run_minutes="${{ github.event.inputs.run_minutes }}" \
+            -f auto_restart="${{ github.event.inputs.auto_restart }}"
