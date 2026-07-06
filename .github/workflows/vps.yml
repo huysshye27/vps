@@ -1,4 +1,4 @@
-name: Temporary VPS (localhost.run - All Platforms)
+name: Temporary VPS (pinggy.io - All Platforms)
 
 on:
   workflow_dispatch:
@@ -89,7 +89,7 @@ jobs:
           echo "max=$MAX" >> $GITHUB_OUTPUT
 
       # ==========================================
-      # 🐧 LINUX (SSH / RDP) + localhost.run
+      # 🐧 LINUX (SSH / RDP) + pinggy.io
       # ==========================================
       - name: Setup Linux VPS
         if: runner.os == 'Linux'
@@ -142,23 +142,24 @@ jobs:
             PROT_NAME="SSH"
           fi
 
-          # Tạo tunnel với localhost.run (dùng cổng 80 để forward TCP)
-          echo ">>> Khởi tạo tunnel localhost.run..."
-          nohup ssh -o StrictHostKeyChecking=no -R 80:localhost:$LOCAL_PORT localhost.run > /tmp/localhost.log 2>&1 &
+          # Tạo tunnel với pinggy.io (dùng cổng 443, hỗ trợ TCP)
+          echo ">>> Khởi tạo tunnel pinggy.io..."
+          nohup ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:$LOCAL_PORT pinggy.io > /tmp/pinggy.log 2>&1 &
           sleep 5
 
-          # Lấy subdomain từ log (dòng chứa "https://<subdomain>.localhost.run")
-          TUNNEL_URL=$(grep -o 'https\?://[^ ]*\.localhost\.run' /tmp/localhost.log | head -1)
+          # Lấy URL từ log: dạng "https://<random>.pinggy.io" hoặc "tcp://<random>.pinggy.io:<port>"
+          TUNNEL_URL=$(grep -o 'https\?://[^ ]*\.pinggy\.io' /tmp/pinggy.log | head -1)
           if [ -z "$TUNNEL_URL" ]; then
-            TUNNEL_URL=$(grep -o '[a-z0-9-]*\.localhost\.run' /tmp/localhost.log | head -1)
+            TUNNEL_URL=$(grep -o '[a-z0-9-]*\.pinggy\.io' /tmp/pinggy.log | head -1)
             if [ -n "$TUNNEL_URL" ]; then
               TUNNEL_URL="tcp://$TUNNEL_URL"
             else
-              echo "❌ Không lấy được URL từ localhost.run. Kiểm tra log:"
-              cat /tmp/localhost.log
+              echo "❌ Không lấy được URL từ pinggy.io. Kiểm tra log:"
+              cat /tmp/pinggy.log
               exit 1
             fi
           fi
+          # Lấy địa chỉ không giao thức, nếu có cổng thì giữ nguyên
           TUNNEL_ADDR=$(echo $TUNNEL_URL | sed 's/^tcp:\/\///' | sed 's/^https:\/\///')
           if [ -z "$TUNNEL_ADDR" ]; then
             TUNNEL_ADDR=$TUNNEL_URL
@@ -185,7 +186,7 @@ jobs:
           fi
 
       # ==========================================
-      # 🪟 WINDOWS (SSH / RDP) + localhost.run
+      # 🪟 WINDOWS (SSH / RDP) + pinggy.io
       # ==========================================
       - name: Setup Windows VPS
         if: runner.os == 'Windows'
@@ -244,23 +245,23 @@ jobs:
               $ProtName = "SSH"
           }
 
-          # Tạo tunnel với localhost.run
-          Write-Host ">>> Khởi tạo tunnel localhost.run..."
-          $sshArgs = "-o StrictHostKeyChecking=no -R 80:localhost:$LocalPort localhost.run"
-          Start-Process -FilePath "ssh" -ArgumentList $sshArgs -RedirectStandardOutput "localhost.log" -NoNewWindow
+          # Tạo tunnel với pinggy.io
+          Write-Host ">>> Khởi tạo tunnel pinggy.io..."
+          $sshArgs = "-p 443 -o StrictHostKeyChecking=no -R0:localhost:$LocalPort pinggy.io"
+          Start-Process -FilePath "ssh" -ArgumentList $sshArgs -RedirectStandardOutput "pinggy.log" -NoNewWindow
           Start-Sleep -Seconds 5
 
-          $logContent = Get-Content "localhost.log" -Raw
-          $urlMatch = [regex]::Match($logContent, 'https?://([a-z0-9-]+\.localhost\.run)')
+          $logContent = Get-Content "pinggy.log" -Raw
+          $urlMatch = [regex]::Match($logContent, 'https?://([a-z0-9-]+\.pinggy\.io)')
           if ($urlMatch.Success) {
               $TunnelAddr = $urlMatch.Groups[1].Value
           } else {
-              $urlMatch = [regex]::Match($logContent, '([a-z0-9-]+\.localhost\.run)')
+              $urlMatch = [regex]::Match($logContent, '([a-z0-9-]+\.pinggy\.io)')
               if ($urlMatch.Success) {
                   $TunnelAddr = $urlMatch.Groups[1].Value
               } else {
-                  Write-Host "❌ Không lấy được URL từ localhost.run. Kiểm tra localhost.log:"
-                  Get-Content "localhost.log"
+                  Write-Host "❌ Không lấy được URL từ pinggy.io. Kiểm tra pinggy.log:"
+                  Get-Content "pinggy.log"
                   exit 1
               }
           }
@@ -288,7 +289,7 @@ jobs:
           }
 
       # ==========================================
-      # 🍎 macOS (SSH / VNC) + localhost.run
+      # 🍎 macOS (SSH / VNC) + pinggy.io
       # ==========================================
       - name: Setup macOS VPS
         if: runner.os == 'macOS'
@@ -325,18 +326,18 @@ jobs:
               PROT_NAME="SSH"
           fi
 
-          echo ">>> Khởi tạo tunnel localhost.run..."
-          nohup ssh -o StrictHostKeyChecking=no -R 80:localhost:$LOCAL_PORT localhost.run > /tmp/localhost.log 2>&1 &
+          echo ">>> Khởi tạo tunnel pinggy.io..."
+          nohup ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:$LOCAL_PORT pinggy.io > /tmp/pinggy.log 2>&1 &
           sleep 5
 
-          TUNNEL_URL=$(grep -o 'https\?://[^ ]*\.localhost\.run' /tmp/localhost.log | head -1)
+          TUNNEL_URL=$(grep -o 'https\?://[^ ]*\.pinggy\.io' /tmp/pinggy.log | head -1)
           if [ -z "$TUNNEL_URL" ]; then
-            TUNNEL_URL=$(grep -o '[a-z0-9-]*\.localhost\.run' /tmp/localhost.log | head -1)
+            TUNNEL_URL=$(grep -o '[a-z0-9-]*\.pinggy\.io' /tmp/pinggy.log | head -1)
             if [ -n "$TUNNEL_URL" ]; then
               TUNNEL_URL="tcp://$TUNNEL_URL"
             else
-              echo "❌ Không lấy được URL từ localhost.run. Kiểm tra log:"
-              cat /tmp/localhost.log
+              echo "❌ Không lấy được URL từ pinggy.io. Kiểm tra log:"
+              cat /tmp/pinggy.log
               exit 1
             fi
           fi
