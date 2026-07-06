@@ -1,4 +1,4 @@
-name: Temporary VPS (sish - All Platforms)
+name: Temporary VPS (localhost.run - All Platforms)
 
 on:
   workflow_dispatch:
@@ -89,7 +89,7 @@ jobs:
           echo "max=$MAX" >> $GITHUB_OUTPUT
 
       # ==========================================
-      # 🐧 LINUX (SSH / RDP) + sish
+      # 🐧 LINUX (SSH / RDP) + localhost.run
       # ==========================================
       - name: Setup Linux VPS
         if: runner.os == 'Linux'
@@ -142,26 +142,26 @@ jobs:
             PROT_NAME="SSH"
           fi
 
-          # Tạo tunnel với sish (thêm -N -T để không chạy lệnh và không allocate TTY)
-          echo ">>> Khởi tạo tunnel sish (sish.io)..."
-          nohup ssh -N -T -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -R 0:localhost:$LOCAL_PORT sish.io > /tmp/sish.log 2>&1 &
-          sleep 8
+          # Tạo tunnel với localhost.run (dùng cổng 80 để forward TCP)
+          echo ">>> Khởi tạo tunnel localhost.run..."
+          nohup ssh -o StrictHostKeyChecking=no -R 80:localhost:$LOCAL_PORT localhost.run > /tmp/localhost.log 2>&1 &
+          sleep 5
 
-          # Lấy URL từ log: dạng "https://<subdomain>.sish.io" hoặc "<subdomain>.sish.io"
-          SISH_URL=$(grep -o 'https\?://[^ ]*\.sish\.io' /tmp/sish.log | head -1)
-          if [ -z "$SISH_URL" ]; then
-            SISH_URL=$(grep -o '[a-z0-9-]*\.sish\.io' /tmp/sish.log | head -1)
-            if [ -n "$SISH_URL" ]; then
-              SISH_URL="tcp://$SISH_URL"
+          # Lấy subdomain từ log (dòng chứa "https://<subdomain>.localhost.run")
+          TUNNEL_URL=$(grep -o 'https\?://[^ ]*\.localhost\.run' /tmp/localhost.log | head -1)
+          if [ -z "$TUNNEL_URL" ]; then
+            TUNNEL_URL=$(grep -o '[a-z0-9-]*\.localhost\.run' /tmp/localhost.log | head -1)
+            if [ -n "$TUNNEL_URL" ]; then
+              TUNNEL_URL="tcp://$TUNNEL_URL"
             else
-              echo "❌ Không lấy được URL từ sish. Kiểm tra log:"
-              cat /tmp/sish.log
+              echo "❌ Không lấy được URL từ localhost.run. Kiểm tra log:"
+              cat /tmp/localhost.log
               exit 1
             fi
           fi
-          SISH_ADDR=$(echo $SISH_URL | sed 's/^tcp:\/\///' | sed 's/^https:\/\///')
-          if [ -z "$SISH_ADDR" ]; then
-            SISH_ADDR=$SISH_URL
+          TUNNEL_ADDR=$(echo $TUNNEL_URL | sed 's/^tcp:\/\///' | sed 's/^https:\/\///')
+          if [ -z "$TUNNEL_ADDR" ]; then
+            TUNNEL_ADDR=$TUNNEL_URL
           fi
 
           echo "=============================================="
@@ -169,10 +169,9 @@ jobs:
           echo "🖥️ OS: Ubuntu (${{ github.event.inputs.runner_os }})"
           echo "👤 User: $SSH_USER"
           echo "🔑 Pass: $SSH_PASS"
-          echo "🌐 Địa chỉ kết nối: $SISH_ADDR"
+          echo "🌐 Địa chỉ kết nối: $TUNNEL_ADDR"
           echo "=============================================="
 
-          # Đếm ngược và tự động rerun
           for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
 
           if [ "$AUTO_RERUN" = "yes" ]; then
@@ -186,7 +185,7 @@ jobs:
           fi
 
       # ==========================================
-      # 🪟 WINDOWS (SSH / RDP) + sish
+      # 🪟 WINDOWS (SSH / RDP) + localhost.run
       # ==========================================
       - name: Setup Windows VPS
         if: runner.os == 'Windows'
@@ -245,23 +244,23 @@ jobs:
               $ProtName = "SSH"
           }
 
-          # Tạo tunnel với sish
-          Write-Host ">>> Khởi tạo tunnel sish (sish.io)..."
-          $sshArgs = "-N -T -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -R 0:localhost:$LocalPort sish.io"
-          Start-Process -FilePath "ssh" -ArgumentList $sshArgs -RedirectStandardOutput "sish.log" -NoNewWindow
-          Start-Sleep -Seconds 8
+          # Tạo tunnel với localhost.run
+          Write-Host ">>> Khởi tạo tunnel localhost.run..."
+          $sshArgs = "-o StrictHostKeyChecking=no -R 80:localhost:$LocalPort localhost.run"
+          Start-Process -FilePath "ssh" -ArgumentList $sshArgs -RedirectStandardOutput "localhost.log" -NoNewWindow
+          Start-Sleep -Seconds 5
 
-          $logContent = Get-Content "sish.log" -Raw
-          $urlMatch = [regex]::Match($logContent, 'https?://([a-z0-9-]+\.sish\.io)')
+          $logContent = Get-Content "localhost.log" -Raw
+          $urlMatch = [regex]::Match($logContent, 'https?://([a-z0-9-]+\.localhost\.run)')
           if ($urlMatch.Success) {
-              $SishAddr = $urlMatch.Groups[1].Value
+              $TunnelAddr = $urlMatch.Groups[1].Value
           } else {
-              $urlMatch = [regex]::Match($logContent, '([a-z0-9-]+\.sish\.io)')
+              $urlMatch = [regex]::Match($logContent, '([a-z0-9-]+\.localhost\.run)')
               if ($urlMatch.Success) {
-                  $SishAddr = $urlMatch.Groups[1].Value
+                  $TunnelAddr = $urlMatch.Groups[1].Value
               } else {
-                  Write-Host "❌ Không lấy được URL từ sish. Kiểm tra sish.log:"
-                  Get-Content "sish.log"
+                  Write-Host "❌ Không lấy được URL từ localhost.run. Kiểm tra localhost.log:"
+                  Get-Content "localhost.log"
                   exit 1
               }
           }
@@ -271,7 +270,7 @@ jobs:
           Write-Host "🖥️ OS: Windows (${{ github.event.inputs.runner_os }})"
           Write-Host "👤 User: $TargetUser"
           Write-Host "🔑 Pass: $env:SSH_PASS"
-          Write-Host "🌐 Địa chỉ kết nối: $SishAddr"
+          Write-Host "🌐 Địa chỉ kết nối: $TunnelAddr"
           Write-Host "=============================================="
 
           $MaxMinutes = [int]$env:MAX_MINUTES
@@ -289,7 +288,7 @@ jobs:
           }
 
       # ==========================================
-      # 🍎 macOS (SSH / VNC) + sish
+      # 🍎 macOS (SSH / VNC) + localhost.run
       # ==========================================
       - name: Setup macOS VPS
         if: runner.os == 'macOS'
@@ -326,25 +325,24 @@ jobs:
               PROT_NAME="SSH"
           fi
 
-          # Tạo tunnel với sish
-          echo ">>> Khởi tạo tunnel sish (sish.io)..."
-          nohup ssh -N -T -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -R 0:localhost:$LOCAL_PORT sish.io > /tmp/sish.log 2>&1 &
-          sleep 8
+          echo ">>> Khởi tạo tunnel localhost.run..."
+          nohup ssh -o StrictHostKeyChecking=no -R 80:localhost:$LOCAL_PORT localhost.run > /tmp/localhost.log 2>&1 &
+          sleep 5
 
-          SISH_URL=$(grep -o 'https\?://[^ ]*\.sish\.io' /tmp/sish.log | head -1)
-          if [ -z "$SISH_URL" ]; then
-            SISH_URL=$(grep -o '[a-z0-9-]*\.sish\.io' /tmp/sish.log | head -1)
-            if [ -n "$SISH_URL" ]; then
-              SISH_URL="tcp://$SISH_URL"
+          TUNNEL_URL=$(grep -o 'https\?://[^ ]*\.localhost\.run' /tmp/localhost.log | head -1)
+          if [ -z "$TUNNEL_URL" ]; then
+            TUNNEL_URL=$(grep -o '[a-z0-9-]*\.localhost\.run' /tmp/localhost.log | head -1)
+            if [ -n "$TUNNEL_URL" ]; then
+              TUNNEL_URL="tcp://$TUNNEL_URL"
             else
-              echo "❌ Không lấy được URL từ sish. Kiểm tra log:"
-              cat /tmp/sish.log
+              echo "❌ Không lấy được URL từ localhost.run. Kiểm tra log:"
+              cat /tmp/localhost.log
               exit 1
             fi
           fi
-          SISH_ADDR=$(echo $SISH_URL | sed 's/^tcp:\/\///' | sed 's/^https:\/\///')
-          if [ -z "$SISH_ADDR" ]; then
-            SISH_ADDR=$SISH_URL
+          TUNNEL_ADDR=$(echo $TUNNEL_URL | sed 's/^tcp:\/\///' | sed 's/^https:\/\///')
+          if [ -z "$TUNNEL_ADDR" ]; then
+            TUNNEL_ADDR=$TUNNEL_URL
           fi
 
           echo "=============================================="
@@ -352,7 +350,7 @@ jobs:
           echo "🖥️ OS: macOS (${{ github.event.inputs.runner_os }})"
           echo "👤 User: $SSH_USER"
           echo "🔑 Pass: $SSH_PASS"
-          echo "🌐 Địa chỉ kết nối: $SISH_ADDR"
+          echo "🌐 Địa chỉ kết nối: $TUNNEL_ADDR"
           echo "=============================================="
 
           for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
