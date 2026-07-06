@@ -1,4 +1,4 @@
-name: Temporary VPS (Multi-OS + Auto Re-run)
+name: Temporary VPS (Ngrok - All Platforms)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ on:
           - 'macos-latest'
           - 'macos-13'
       connection_type:
-        description: '🌐 Giao thức (SSH/RDP/VNC)'
+        description: '🌐 Giao thức (SSH = Dòng lệnh, RDP/VNC = Đồ họa)'
         required: true
         default: 'ssh'
         type: choice
@@ -30,7 +30,7 @@ on:
         required: true
         default: 'runner'
       ssh_password:
-        description: '🔑 Password (Windows yêu cầu phức tạp)'
+        description: '🔑 Password (Phải có hoa, thường, số, ký tự đặc biệt)'
         required: true
         default: 'Vps@Secure2026!'
       enable_root_ssh:
@@ -42,15 +42,15 @@ on:
           - 'yes'
           - 'no'
       ssh_port:
-        description: '🔌 SSH port'
+        description: '🔌 SSH port (Chỉ dùng nếu chọn SSH)'
         required: true
         default: '22'
       timezone:
-        description: '🕒 Múi giờ'
+        description: '🕒 Múi giờ (vd: Asia/Ho_Chi_Minh, UTC)'
         required: true
         default: 'UTC'
       max_runtime:
-        description: '⏱️ Max runtime (phút, tối đa 350)'
+        description: '⏱️ Max runtime (minutes, max 350)'
         required: true
         default: '330'
         type: choice
@@ -62,30 +62,11 @@ on:
           - '300'
           - '330'
           - '350'
-      auto_rerun:
-        description: '🔄 Tự động re-run khi hết giờ?'
-        required: true
-        default: 'no'
-        type: choice
-        options:
-          - 'yes'
-          - 'no'
-      save_data_before_rerun:
-        description: '💾 Lưu dữ liệu trước khi re-run? (chỉ khi auto_rerun = yes)'
-        required: true
-        default: 'no'
-        type: choice
-        options:
-          - 'yes'
-          - 'no'
 
 jobs:
   vps:
     runs-on: ${{ github.event.inputs.runner_os }}
     timeout-minutes: 350
-    permissions:
-      actions: write
-      contents: read
 
     steps:
       - name: Check runtime
@@ -96,9 +77,9 @@ jobs:
           if [ "$MAX" -gt 350 ]; then MAX=350; fi
           echo "max=$MAX" >> $GITHUB_OUTPUT
 
-      # ========================================
-      # LINUX SETUP
-      # ========================================
+      # ==========================================
+      # 🐧 LINUX SETUP (SSH & XRDP)
+      # ==========================================
       - name: Setup Linux VPS
         if: runner.os == 'Linux'
         env:
@@ -110,15 +91,14 @@ jobs:
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
           NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
           TIMEZONE: ${{ github.event.inputs.timezone }}
-          AUTO_RERUN: ${{ github.event.inputs.auto_rerun }}
         run: |
           set -e
           sudo timedatectl set-timezone "$TIMEZONE" || true
-
+          
           if [ "$ENABLE_ROOT" = "yes" ]; then
             echo "root:$SSH_PASS" | sudo chpasswd
           fi
-
+          
           if id "$SSH_USER" &>/dev/null; then
             echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
           else
@@ -129,56 +109,50 @@ jobs:
           echo "$SSH_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$SSH_USER
 
           if [ "$CONNECTION_TYPE" = "rdp" ] || [ "$CONNECTION_TYPE" = "vnc" ]; then
+            echo ">>> Cài đặt XFCE4 Desktop và XRDP..."
             sudo apt update -qq
             sudo DEBIAN_FRONTEND=noninteractive apt install -y -qq xfce4 xfce4-goodies xrdp curl jq
             sudo systemctl enable xrdp
+            sudo adduser xrdp ssl-cert
             echo xfce4-session > /home/$SSH_USER/.xsession
             sudo chown $SSH_USER:$SSH_USER /home/$SSH_USER/.xsession
             sudo systemctl restart xrdp
             NGROK_PORT=3389
-            PROT_NAME="RDP (qua XRDP)"
+            PROT_NAME="RDP"
           else
+            echo ">>> Cấu hình SSH..."
             sudo apt update -qq && sudo apt install -y -qq openssh-server curl jq tmux
-            sudo sed -i "s/^#Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config || true
-            sudo sed -i "s/^Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config || true
+            sudo sed -i "s/^#Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
+            sudo sed -i "s/^Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
             sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
             sudo systemctl restart ssh
             NGROK_PORT=$SSH_PORT
             PROT_NAME="SSH"
           fi
 
+          echo ">>> Khởi động Ngrok..."
           curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" | sudo tee /etc/apt/sources.list.d/ngrok.list
           sudo apt update -qq && sudo apt install -y -qq ngrok
           ngrok config add-authtoken "$NGROK_TOKEN"
           nohup ngrok tcp $NGROK_PORT --log=stdout > /tmp/ngrok.log 2>&1 &
           sleep 5
+
           NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' | sed 's/tcp:\/\///')
-
+          
           echo "=============================================="
-          echo "✅ LINUX VPS SẴN SÀNG ($PROT_NAME)"
-          echo "🌐 $NGROK_URL"
-          echo "👤 $SSH_USER | 🔑 $SSH_PASS"
+          echo "✅ LINUX VPS SẴN SÀNG ($PROT_NAME)!"
+          echo "🖥️ OS: Ubuntu (${{ github.event.inputs.runner_os }})"
+          echo "👤 User: $SSH_USER"
+          echo "🔑 Pass: $SSH_PASS"
+          echo "🌐 Địa chỉ kết nối: $NGROK_URL"
           echo "=============================================="
 
-          START_TIME=$SECONDS
-          MAX_SEC=$((MAX_MINUTES*60))
-          while true; do
-            NOW=$SECONDS
-            ELAPSED=$((NOW - START_TIME))
-            REMAINING=$((MAX_SEC - ELAPSED))
-            if [ "$AUTO_RERUN" = "yes" ] && [ $REMAINING -lt 300 ]; then
-              echo "🔄 Chuẩn bị re-run..."
-              break
-            fi
-            if [ $REMAINING -le 0 ]; then break; fi
-            echo "⏱️ Còn $((REMAINING/60)) phút..."
-            sleep 60
-          done
+          for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
 
-      # ========================================
-      # WINDOWS SETUP
-      # ========================================
+      # ==========================================
+      # 🪟 WINDOWS SETUP (SSH & RDP)
+      # ==========================================
       - name: Setup Windows VPS
         if: runner.os == 'Windows'
         env:
@@ -189,67 +163,77 @@ jobs:
           CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
           NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
-          AUTO_RERUN: ${{ github.event.inputs.auto_rerun }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           choco install ngrok -y --no-progress | Out-Null
 
           $Password = ConvertTo-SecureString $env:SSH_PASS -AsPlainText -Force
-          $TargetUser = if ($env:ENABLE_ROOT -eq "yes") { "runneradmin" } else { $env:SSH_USER }
-
+          
+          if ($env:ENABLE_ROOT -eq "yes") {
+              $TargetUser = "runneradmin"
+          } else {
+              $TargetUser = $env:SSH_USER
+          }
+          
           try {
-            if (Get-LocalUser -Name $TargetUser -ErrorAction SilentlyContinue) {
-              Set-LocalUser -Name $TargetUser -Password $Password
-            } else {
-              New-LocalUser -Name $TargetUser -Password $Password -FullName $TargetUser
-              Add-LocalGroupMember -Group "Administrators" -Member $TargetUser
-            }
+              if (Get-LocalUser -Name $TargetUser -ErrorAction SilentlyContinue) {
+                  Set-LocalUser -Name $TargetUser -Password $Password
+              } else {
+                  New-LocalUser -Name $TargetUser -Password $Password -FullName $TargetUser -Description "VPS User"
+                  Add-LocalGroupMember -Group "Administrators" -Member $TargetUser
+              }
           } catch {
-            Write-Host "❌ LỖI: Mật khẩu không đủ mạnh hoặc vi phạm chính sách Windows."
-            exit 1
+              Write-Host "=========================================================================="
+              Write-Host "❌ LỖI TẠO USER: Mật khẩu bạn nhập quá yếu hoặc vi phạm chính sách Windows!"
+              Write-Host "👉 YÊU CẦU BẮT BUỘC:"
+              Write-Host "   1. Dài tối thiểu 8 ký tự."
+              Write-Host "   2. Phải có: Chữ HOA, chữ thường, SỐ và Ký tự đặc biệt (VD: @, !, #)."
+              Write-Host "   3. KHÔNG ĐƯỢC chứa tên user (vd: user là 'runner' thì pass không có chữ 'runner')."
+              Write-Host "=========================================================================="
+              exit 1
           }
 
           if ($env:CONNECTION_TYPE -eq 'rdp' -or $env:CONNECTION_TYPE -eq 'vnc') {
-            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
-            Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
-            $NgrokPort = 3389
-            $ProtName = "RDP"
+              Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
+              Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
+              Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
+              $NgrokPort = 3389
+              $ProtName = "RDP"
           } else {
-            Start-Service sshd
-            Set-Service -Name sshd -StartupType 'Automatic'
-            $config = "$env:ProgramData\ssh\sshd_config"
-            (Get-Content $config) -replace '^#?Port .*', "Port $env:SSH_PORT" | Set-Content $config
-            Restart-Service sshd
-            New-NetFirewallRule -Name "SSH" -DisplayName "SSH" -Direction Inbound -Protocol TCP -Action Allow -LocalPort $env:SSH_PORT | Out-Null
-            $NgrokPort = $env:SSH_PORT
-            $ProtName = "SSH"
+              Start-Service sshd
+              Set-Service -Name sshd -StartupType 'Automatic'
+              $SshdConfig = "$env:ProgramData\ssh\sshd_config"
+              if (Test-Path $SshdConfig) {
+                  (Get-Content $SshdConfig) -replace '^#?Port .*', "Port $env:SSH_PORT" | Set-Content $SshdConfig
+                  Restart-Service sshd
+              }
+              New-NetFirewallRule -Name "Open SSH Port" -DisplayName "Open SSH Port" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort $env:SSH_PORT | Out-Null
+              $NgrokPort = $env:SSH_PORT
+              $ProtName = "SSH"
           }
 
           ngrok config add-authtoken $env:NGROK_TOKEN
-          Start-Process -FilePath ngrok -ArgumentList "tcp $NgrokPort" -NoNewWindow
-          Start-Sleep -Seconds 8
-          $url = (Invoke-RestMethod http://localhost:4040/api/tunnels).tunnels[0].public_url -replace 'tcp://',''
+          Start-Process -FilePath "ngrok" -ArgumentList "tcp $NgrokPort" -NoNewWindow
+          Start-Sleep -Seconds 5
+
+          $Tunnels = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
+          $NgrokUrl = $Tunnels.tunnels[0].public_url -replace "tcp://", ""
 
           Write-Host "=============================================="
-          Write-Host "✅ WINDOWS VPS SẴN SÀNG ($ProtName)"
-          Write-Host "🌐 $url"
-          Write-Host "👤 $TargetUser | 🔑 $env:SSH_PASS"
+          Write-Host "✅ WINDOWS VPS SẴN SÀNG ($ProtName)!"
+          Write-Host "🖥️ OS: Windows (${{ github.event.inputs.runner_os }})"
+          Write-Host "👤 User: $TargetUser"
+          Write-Host "🔑 Pass: $env:SSH_PASS"
+          Write-Host "🌐 Địa chỉ kết nối: $NgrokUrl"
           Write-Host "=============================================="
 
-          $start = Get-Date
-          $maxSec = [int]$env:MAX_MINUTES * 60
-          while ($true) {
-            $remaining = $maxSec - ((Get-Date) - $start).TotalSeconds
-            if ($env:AUTO_RERUN -eq 'yes' -and $remaining -lt 300) { break }
-            if ($remaining -le 0) { break }
-            Write-Host "⏱️ Còn $([math]::Floor($remaining/60)) phút..."
-            Start-Sleep -Seconds 60
-          }
+          $MaxMinutes = [int]$env:MAX_MINUTES
+          for ($i = $MaxMinutes; $i -gt 0; $i--) { Write-Host "⏱️ $i phút..."; Start-Sleep -Seconds 60 }
 
-      # ========================================
-      # macOS SETUP
-      # ========================================
+      # ==========================================
+      # 🍎 macOS SETUP (SSH & VNC)
+      # ==========================================
       - name: Setup macOS VPS
         if: runner.os == 'macOS'
         env:
@@ -259,101 +243,47 @@ jobs:
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
           NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
-          AUTO_RERUN: ${{ github.event.inputs.auto_rerun }}
         run: |
+          set -e
           brew install jq --quiet
-
+          
           if ! id "$SSH_USER" &>/dev/null; then
-            sudo sysadminctl -addUser "$SSH_USER" -password "$SSH_PASS" -admin
+              sudo sysadminctl -addUser "$SSH_USER" -password "$SSH_PASS" -admin
           else
-            sudo dscl . -passwd /Users/"$SSH_USER" "$SSH_PASS"
+              sudo dscl . -passwd /Users/"$SSH_USER" "$SSH_PASS"
           fi
 
           if [ "$CONNECTION_TYPE" = "rdp" ] || [ "$CONNECTION_TYPE" = "vnc" ]; then
-            sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -restart -agent -privs -all
-            sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -allowAccessFor -specifiedUsers
-            sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -users "$SSH_USER" -access -on -privs -all
-            NGROK_PORT=5900
-            PROT_NAME="VNC"
+              echo ">>> Bật Screen Sharing (VNC)..."
+              sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -restart -agent -privs -all
+              sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -allowAccessFor -specifiedUsers
+              sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -users "$SSH_USER" -access -on -privs -all
+              NGROK_PORT=5900
+              PROT_NAME="VNC (Screen Sharing)"
           else
-            sudo systemsetup -setremotelogin on
-            NGROK_PORT=22
-            PROT_NAME="SSH"
+              echo ">>> Bật Remote Login (SSH)..."
+              sudo systemsetup -setremotelogin on
+              NGROK_PORT=22
+              PROT_NAME="SSH"
           fi
 
+          echo ">>> Cài đặt Ngrok..."
           curl -sSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-amd64.tgz -o ngrok.tgz
-          tar -xzf ngrok.tgz && sudo mv ngrok /usr/local/bin/
+          tar -xzf ngrok.tgz
+          sudo mv ngrok /usr/local/bin/
+
           ngrok config add-authtoken "$NGROK_TOKEN"
           nohup ngrok tcp $NGROK_PORT --log=stdout > /tmp/ngrok.log 2>&1 &
           sleep 5
+
           NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' | sed 's/tcp:\/\///')
 
           echo "=============================================="
-          echo "✅ macOS VPS SẴN SÀNG ($PROT_NAME)"
-          echo "🌐 $NGROK_URL"
-          echo "👤 $SSH_USER | 🔑 $SSH_PASS"
+          echo "✅ macOS VPS SẴN SÀNG ($PROT_NAME)!"
+          echo "🖥️ OS: macOS (${{ github.event.inputs.runner_os }})"
+          echo "👤 User: $SSH_USER"
+          echo "🔑 Pass: $SSH_PASS"
+          echo "🌐 Địa chỉ kết nối: $NGROK_URL"
           echo "=============================================="
 
-          START=$SECONDS
-          MAX_SEC=$((MAX_MINUTES*60))
-          while true; do
-            NOW=$SECONDS
-            REMAINING=$((MAX_SEC - (NOW - START)))
-            if [ "$AUTO_RERUN" = "yes" ] && [ $REMAINING -lt 300 ]; then break; fi
-            if [ $REMAINING -le 0 ]; then break; fi
-            echo "⏱️ Còn $((REMAINING/60)) phút..."
-            sleep 60
-          done
-
-      # ============================
-      # LƯU DỮ LIỆU TRƯỚC KHI RE-RUN
-      # ============================
-      - name: Save data (Linux/macOS)
-        if: (runner.os == 'Linux' || runner.os == 'macOS') && github.event.inputs.auto_rerun == 'yes' && github.event.inputs.save_data_before_rerun == 'yes'
-        run: |
-          tar -czf /tmp/vps-data.tar.gz -C /home runner 2>/dev/null || true
-        continue-on-error: true
-
-      - name: Upload artifact (Linux/macOS)
-        if: (runner.os == 'Linux' || runner.os == 'macOS') && github.event.inputs.auto_rerun == 'yes' && github.event.inputs.save_data_before_rerun == 'yes'
-        uses: actions/upload-artifact@v4
-        with:
-          name: vps-data
-          path: /tmp/vps-data.tar.gz
-          retention-days: 1
-
-      - name: Save data (Windows)
-        if: runner.os == 'Windows' && github.event.inputs.auto_rerun == 'yes' && github.event.inputs.save_data_before_rerun == 'yes'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path C:\Users\runner\* -DestinationPath C:\temp\vps-data.zip -Force
-        continue-on-error: true
-
-      - name: Upload artifact (Windows)
-        if: runner.os == 'Windows' && github.event.inputs.auto_rerun == 'yes' && github.event.inputs.save_data_before_rerun == 'yes'
-        uses: actions/upload-artifact@v4
-        with:
-          name: vps-data
-          path: C:\temp\vps-data.zip
-          retention-days: 1
-
-      # ============================
-      # RE-RUN WORKFLOW (tạo run mới giống hệt)
-      # ============================
-      - name: Trigger re-run (create new run of this workflow)
-        if: github.event.inputs.auto_rerun == 'yes'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh workflow run "vps.yml" \
-            --ref "${{ github.ref_name }}" \
-            -f runner_os="${{ github.event.inputs.runner_os }}" \
-            -f connection_type="${{ github.event.inputs.connection_type }}" \
-            -f ssh_user="${{ github.event.inputs.ssh_user }}" \
-            -f ssh_password="${{ github.event.inputs.ssh_password }}" \
-            -f enable_root_ssh="${{ github.event.inputs.enable_root_ssh }}" \
-            -f ssh_port="${{ github.event.inputs.ssh_port }}" \
-            -f timezone="${{ github.event.inputs.timezone }}" \
-            -f max_runtime="${{ steps.runtime.outputs.max }}" \
-            -f auto_rerun="${{ github.event.inputs.auto_rerun }}" \
-            -f save_data_before_rerun="${{ github.event.inputs.save_data_before_rerun }}"
+          for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
