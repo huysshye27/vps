@@ -142,17 +142,14 @@ jobs:
             PROT_NAME="SSH"
           fi
 
-          # Cài sish client (ssh) đã có sẵn, chỉ cần tạo tunnel
+          # Tạo tunnel với sish (thêm -N -T để không chạy lệnh và không allocate TTY)
           echo ">>> Khởi tạo tunnel sish (sish.io)..."
-          # Sử dụng ssh để tạo tunnel TCP, lấy subdomain ngẫu nhiên
-          # Chạy trong background, log ra file
-          nohup ssh -o StrictHostKeyChecking=no -R 0:localhost:$LOCAL_PORT sish.io > /tmp/sish.log 2>&1 &
-          sleep 5
+          nohup ssh -N -T -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -R 0:localhost:$LOCAL_PORT sish.io > /tmp/sish.log 2>&1 &
+          sleep 8
 
-          # Lấy URL từ log (dòng chứa "forwarding" hoặc "tunnel")
+          # Lấy URL từ log: dạng "https://<subdomain>.sish.io" hoặc "<subdomain>.sish.io"
           SISH_URL=$(grep -o 'https\?://[^ ]*\.sish\.io' /tmp/sish.log | head -1)
           if [ -z "$SISH_URL" ]; then
-            # Nếu không có, thử lấy từ log khác
             SISH_URL=$(grep -o '[a-z0-9-]*\.sish\.io' /tmp/sish.log | head -1)
             if [ -n "$SISH_URL" ]; then
               SISH_URL="tcp://$SISH_URL"
@@ -162,7 +159,6 @@ jobs:
               exit 1
             fi
           fi
-          # Chuyển tcp:// thành địa chỉ không giao thức
           SISH_ADDR=$(echo $SISH_URL | sed 's/^tcp:\/\///' | sed 's/^https:\/\///')
           if [ -z "$SISH_ADDR" ]; then
             SISH_ADDR=$SISH_URL
@@ -176,7 +172,7 @@ jobs:
           echo "🌐 Địa chỉ kết nối: $SISH_ADDR"
           echo "=============================================="
 
-          # Đếm ngược và tự động rerun nếu bật
+          # Đếm ngược và tự động rerun
           for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
 
           if [ "$AUTO_RERUN" = "yes" ]; then
@@ -249,14 +245,12 @@ jobs:
               $ProtName = "SSH"
           }
 
-          # Tạo tunnel sish (dùng ssh có sẵn trên Windows)
+          # Tạo tunnel với sish
           Write-Host ">>> Khởi tạo tunnel sish (sish.io)..."
-          # Sử dụng ssh từ Windows (đã cài OpenSSH Client)
-          $sshCmd = "ssh -o StrictHostKeyChecking=no -R 0:localhost:$LocalPort sish.io"
-          Start-Process -FilePath "ssh" -ArgumentList "-o StrictHostKeyChecking=no -R 0:localhost:$LocalPort sish.io" -RedirectStandardOutput "sish.log" -NoNewWindow
-          Start-Sleep -Seconds 5
+          $sshArgs = "-N -T -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -R 0:localhost:$LocalPort sish.io"
+          Start-Process -FilePath "ssh" -ArgumentList $sshArgs -RedirectStandardOutput "sish.log" -NoNewWindow
+          Start-Sleep -Seconds 8
 
-          # Lấy URL từ log
           $logContent = Get-Content "sish.log" -Raw
           $urlMatch = [regex]::Match($logContent, 'https?://([a-z0-9-]+\.sish\.io)')
           if ($urlMatch.Success) {
@@ -280,7 +274,6 @@ jobs:
           Write-Host "🌐 Địa chỉ kết nối: $SishAddr"
           Write-Host "=============================================="
 
-          # Đếm ngược
           $MaxMinutes = [int]$env:MAX_MINUTES
           for ($i = $MaxMinutes; $i -gt 0; $i--) { Write-Host "⏱️ $i phút..."; Start-Sleep -Seconds 60 }
 
@@ -333,10 +326,10 @@ jobs:
               PROT_NAME="SSH"
           fi
 
-          # Tạo tunnel sish
+          # Tạo tunnel với sish
           echo ">>> Khởi tạo tunnel sish (sish.io)..."
-          nohup ssh -o StrictHostKeyChecking=no -R 0:localhost:$LOCAL_PORT sish.io > /tmp/sish.log 2>&1 &
-          sleep 5
+          nohup ssh -N -T -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -R 0:localhost:$LOCAL_PORT sish.io > /tmp/sish.log 2>&1 &
+          sleep 8
 
           SISH_URL=$(grep -o 'https\?://[^ ]*\.sish\.io' /tmp/sish.log | head -1)
           if [ -z "$SISH_URL" ]; then
