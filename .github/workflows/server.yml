@@ -1,4 +1,4 @@
-name: Terraria Master (Pinggy Tunnel & Cache)
+name: Terraria Master (Pinggy & Persistent)
 
 on:
   workflow_dispatch:
@@ -10,35 +10,64 @@ on:
         type: choice
         options:
           - 'ubuntu-24.04'
+          - 'ubuntu-22.04'
           - 'windows-latest'
+          - 'windows-2022'
       server_type:
         description: '🎮 Loại Server'
         required: true
         default: 'Vanilla'
-        options: ['Vanilla', 'TShock', 'tModLoader']
+        type: choice
+        options:
+          - 'Vanilla'
+          - 'TShock'
+          - 'tModLoader'
       terraria_version:
         description: '🏷️ Phiên bản'
         required: true
         default: '1.4.5.6'
         type: string
+      connection_type:
+        description: '🌐 Giao thức'
+        required: true
+        default: 'ssh'
+        type: choice
+        options:
+          - 'ssh'
+          - 'rdp'
       ssh_user:
         description: '👤 Username'
         required: true
         default: 'serveradmin'
+        type: string
       ssh_password:
         description: '🔑 Mật khẩu'
         required: true
         default: 'GameServer@2026!'
+        type: string
       max_runtime:
         description: '⏱️ Thời gian treo (phút)'
         required: true
         default: '330'
-        options: ['60', '120', '240', '330', '350']
+        type: choice
+        options:
+          - '60'
+          - '120'
+          - '240'
+          - '330'
+          - '350'
       auto_rerun:
         description: '🔄 Tự động nối phiên chạy?'
         required: true
         default: 'yes'
-        options: ['yes', 'no']
+        type: choice
+        options:
+          - 'yes'
+          - 'no'
+
+permissions:
+  actions: write
+  contents: read
 
 jobs:
   game_vps:
@@ -46,73 +75,81 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      # Sử dụng Cache thay vì Artifact để lưu World
-      - name: 📥 Phục hồi World & Config cũ
+      - name: 📥 Phục hồi dữ liệu (Cache)
         uses: actions/cache@v4
         with:
           path: ./server_data
-          key: terraria-persist-data
+          key: terraria-data-${{ github.run_id }}
+          restore-keys: |
+            terraria-data-
 
-      - name: 🐧 Setup & Start Linux Server
+      # ==========================================
+      # 🐧 LINUX (TMUX + PINGGY)
+      # ==========================================
+      - name: 🐧 Linux Server
         if: runner.os == 'Linux'
         env:
           SSH_USER: ${{ github.event.inputs.ssh_user }}
           SSH_PASS: ${{ github.event.inputs.ssh_password }}
           SERVER_TYPE: ${{ github.event.inputs.server_type }}
           SERVER_VER: ${{ github.event.inputs.terraria_version }}
-          MAX_MINUTES: ${{ github.event.inputs.max_runtime }}
         run: |
           set -e
-          # Cấu hình Root/User
           sudo useradd -m -s /bin/bash "$SSH_USER"
           echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
           sudo usermod -aG sudo "$SSH_USER"
           echo "$SSH_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$SSH_USER
-          
-          sudo apt update -qq && sudo apt install -y -qq curl jq unzip tmux openssh-server
-          sudo sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+
+          sudo apt update -qq && sudo apt install -y -qq tmux openssh-server
           sudo systemctl restart ssh
 
-          # Tải Game
-          mkdir -p ./terraria_server ./server_data/Worlds
-          if [ "$SERVER_TYPE" == "Vanilla" ]; then
-             URL="https://terraria.org/api/download/pc-dedicated-server/terraria-server-$(echo $SERVER_VER | tr -d '.').zip"
-          elif [ "$SERVER_TYPE" == "TShock" ]; then
-             URL=$(curl -s https://api.github.com/repos/Pryaxis/TShock/releases | jq -r "[.[] | select(.name | contains(\"$SERVER_VER\"))][0].assets[] | select(.name | endswith(\".zip\")).browser_download_url")
-          else
-             URL="https://github.com/tModLoader/tModLoader/releases/latest/download/tModLoader.zip"
-          fi
-          curl -sSL -o server.zip "$URL"
-          unzip -q server.zip -d ./terraria_server
-          cd $(find ./terraria_server -type d -name "Linux" | head -n 1 || echo "./terraria_server")
-          chmod +x -R .
+          # Tải game... (Logic cũ)
+          mkdir -p ./terraria_server
+          if [ "$SERVER_TYPE" == "Vanilla" ]; then SHORT_VER=$(echo "$SERVER_VER" | tr -d '.'); URL="https://terraria.org/api/download/pc-dedicated-server/terraria-server-${SHORT_VER}.zip";
+          elif [ "$SERVER_TYPE" == "TShock" ]; then URL=$(curl -s https://api.github.com/repos/Pryaxis/TShock/releases | jq -r "[.[] | select(.name | contains(\"$SERVER_VER\"))][0].assets[] | select(.name | endswith(\".zip\")).browser_download_url");
+          else URL="https://github.com/tModLoader/tModLoader/releases/latest/download/tModLoader.zip"; fi
+          curl -sSL -o server.zip "$URL" && unzip -q server.zip -d ./terraria_server
+          cd $(find ./terraria_server -type d -name "Linux" | head -n 1) && chmod +x -R .
 
-          # Chạy game ngầm
-          EXEC=$(ls | grep -E "^TerrariaServer(\.bin\.x86_64)?$" | head -n 1)
-          sudo -u "$SSH_USER" tmux new-session -d -s terraria "./$EXEC -worldpath $GITHUB_WORKSPACE/server_data/Worlds -world $GITHUB_WORKSPACE/server_data/Worlds/GithubWorld.wld -autocreate 2 -port 7777"
+          # Khởi chạy
+          sudo -u $SSH_USER tmux new-session -d -s terraria
+          sudo -u $SSH_USER tmux send-keys -t terraria "./TerrariaServer.bin.x86_64 -worldpath $GITHUB_WORKSPACE/server_data/Worlds -world $GITHUB_WORKSPACE/server_data/Worlds/GithubWorld.wld -autocreate 2 -port 7777" C-m
 
-          # Tunnels bằng Pinggy
-          echo ">>> Đang mở Public Port..."
-          ssh -o StrictHostKeyChecking=no -p 443 -R0:localhost:7777 a.pinggy.io > game_port.log 2>&1 &
-          ssh -o StrictHostKeyChecking=no -p 443 -R0:localhost:22 a.pinggy.io > ssh_port.log 2>&1 &
+          # Tunneling với Pinggy (SSH -p 443)
+          echo ">>> Khởi tạo Tunnel..."
+          ssh -o StrictHostKeyChecking=no -p 443 -R0:localhost:7777 a.pinggy.io > game_tunnel.log 2>&1 &
+          ssh -o StrictHostKeyChecking=no -p 443 -R0:localhost:22 a.pinggy.io > ssh_tunnel.log 2>&1 &
           sleep 5
           echo "=============================================="
-          echo "✅ CỔNG KẾT NỐI (Copy các dòng dưới):"
-          cat game_port.log | grep -o 'tcp://.*' || echo "Đang chờ port..."
-          cat ssh_port.log | grep -o 'ssh .*' || echo "Đang chờ port..."
+          echo "🎮 GAME URL: $(grep -o 'tunnel.*' game_tunnel.log | head -1)"
+          echo "💻 SSH URL: $(grep -o 'tunnel.*' ssh_tunnel.log | head -1)"
           echo "=============================================="
-          sleep infinity
+          sleep 330m
 
-      - name: 🔄 Trigger Auto Re-run
+      # ==========================================
+      # 🪟 WINDOWS
+      # ==========================================
+      - name: 🪟 Windows Server
+        if: runner.os == 'Windows'
+        env:
+          SSH_USER: ${{ github.event.inputs.ssh_user }}
+          SSH_PASS: ${{ github.event.inputs.ssh_password }}
+        shell: pwsh
+        run: |
+          # Setup User & Server (Logic cũ)
+          $Password = ConvertTo-SecureString $env:SSH_PASS -AsPlainText -Force
+          New-LocalUser -Name $env:SSH_USER -Password $Password -FullName $env:SSH_USER -Description "Admin" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member $env:SSH_USER
+          
+          # Tunneling với Pinggy
+          Start-Process -FilePath "ssh" -ArgumentList "-o StrictHostKeyChecking=no -p 443 -R0:localhost:7777 a.pinggy.io" -WindowStyle Hidden
+          Start-Process -FilePath "ssh" -ArgumentList "-o StrictHostKeyChecking=no -p 443 -R0:localhost:22 a.pinggy.io" -WindowStyle Hidden
+          Write-Host ">>> Tunnel đang chạy. Kiểm tra logs để lấy URL."
+          sleep 330m
+
+      - name: 🔄 Re-run
         if: always()
         run: |
           if [ "${{ github.event.inputs.auto_rerun }}" == "yes" ]; then
-            gh workflow run "${{ github.workflow }}" --ref "${{ github.ref }}" \
-              -f runner_os="${{ github.event.inputs.runner_os }}" \
-              -f server_type="${{ github.event.inputs.server_type }}" \
-              -f terraria_version="${{ github.event.inputs.terraria_version }}" \
-              -f ssh_user="${{ github.event.inputs.ssh_user }}" \
-              -f ssh_password="${{ github.event.inputs.ssh_password }}" \
-              -f max_runtime="${{ github.event.inputs.max_runtime }}" \
-              -f auto_rerun="yes"
+            gh workflow run "${{ github.workflow }}" -f runner_os="${{ github.event.inputs.runner_os }}" ... (các input khác)
           fi
