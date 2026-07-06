@@ -119,9 +119,9 @@ jobs:
             echo "⚠️ Không tìm thấy file thực thi TerrariaServer"
           fi
 
-        - name: Install Server (tModLoader)
-          if: github.event.inputs.server_type == 'tmodloader' && ( github.event.inputs.auto_rerun != 'yes' || ! -d '/opt/tmodloader' )
-          run: |
+      - name: Install Server (tModLoader)
+        if: github.event.inputs.server_type == 'tmodloader' && ( github.event.inputs.auto_rerun != 'yes' || ! -d '/opt/tmodloader' )
+        run: |
           VER="${{ github.event.inputs.version }}"
           echo ">>> Tải tModLoader $VER..."
           sudo mkdir -p /opt/tmodloader
