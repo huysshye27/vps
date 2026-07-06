@@ -91,7 +91,7 @@ jobs:
           fi
 
       # ==========================================
-      # 🐧 XỬ LÝ TRÊN LINUX (TMUX)
+      # 🐧 XỬ LÝ TRÊN LINUX (TMUX BỀN VỮNG)
       # ==========================================
       - name: 🐧 Setup & Start Linux Server
         if: runner.os == 'Linux'
@@ -125,10 +125,8 @@ jobs:
             SHORT_VER=$(echo "$SERVER_VER" | tr -d '.')
             URL="https://terraria.org/api/download/pc-dedicated-server/terraria-server-${SHORT_VER}.zip"
           elif [ "$SERVER_TYPE" == "TShock" ]; then
-            echo "Tìm kiếm TShock API cho phiên bản Terraria $SERVER_VER..."
             URL=$(curl -s https://api.github.com/repos/Pryaxis/TShock/releases | jq -r "[.[] | select(.name | contains(\"$SERVER_VER\"))][0].assets[] | select(.name | endswith(\".zip\")).browser_download_url")
             if [ -z "$URL" ] || [ "$URL" == "null" ]; then
-              echo "⚠️ Không tìm thấy khớp tuyệt đối, tự động lấy bản TShock mới nhất..."
               URL=$(curl -s https://api.github.com/repos/Pryaxis/TShock/releases/latest | jq -r '.assets[] | select(.name | endswith(".zip")).browser_download_url')
             fi
           elif [ "$SERVER_TYPE" == "tModLoader" ]; then
@@ -144,11 +142,25 @@ jobs:
           cd "$LINUX_DIR"
           chmod +x -R . || true
 
-          # Cấp lại quyền sở hữu thư mục cho User để tránh lỗi Permission
+          echo ">>> [3] Cấp quyền hệ thống cho User và tạo Shortcut..."
+          # Mở khóa toàn bộ cây thư mục để user truy cập được
+          DIR=$GITHUB_WORKSPACE
+          while [ "$DIR" != "/" ]; do
+            sudo chmod 755 "$DIR" || true
+            DIR=$(dirname "$DIR")
+          done
+          
+          # Đổi chủ quyền cho user
           sudo chown -R $SSH_USER:$SSH_USER $GITHUB_WORKSPACE/server_data
           sudo chown -R $SSH_USER:$SSH_USER $GITHUB_WORKSPACE/terraria_server
+          
+          # Tạo lối tắt ra Desktop (Home) cho user
+          sudo ln -s $GITHUB_WORKSPACE/terraria_server /home/$SSH_USER/terraria_server
+          sudo ln -s $GITHUB_WORKSPACE/server_data /home/$SSH_USER/server_data
+          sudo chown -h $SSH_USER:$SSH_USER /home/$SSH_USER/terraria_server
+          sudo chown -h $SSH_USER:$SSH_USER /home/$SSH_USER/server_data
 
-          echo ">>> [3] Khởi động Game ngầm bằng tài khoản $SSH_USER..."
+          echo ">>> [4] Khởi động Game ngầm bằng tài khoản $SSH_USER..."
           if [ "$SERVER_TYPE" == "tModLoader" ]; then
              EXEC_CMD="./start-tModLoaderServer.sh"
           else
@@ -156,10 +168,13 @@ jobs:
              EXEC_CMD="./$EXEC_FILE"
           fi
           
-          # Đảm bảo tmux chạy dưới quyền của user bạn nhập
-          sudo -u $SSH_USER tmux new-session -d -s terraria "cd $(pwd) && $EXEC_CMD -worldpath $GITHUB_WORKSPACE/server_data/Worlds -world $GITHUB_WORKSPACE/server_data/Worlds/GithubWorld.wld -autocreate 2 -port 7777"
+          # Kỹ thuật mở Tmux an toàn: Mở session trống trước, sau đó gõ lệnh vào. 
+          # => Nếu game lỗi, Tmux sẽ vẫn treo ở màn hình báo lỗi chứ không biến mất.
+          sudo -u $SSH_USER tmux new-session -d -s terraria
+          sudo -u $SSH_USER tmux send-keys -t terraria "cd $GITHUB_WORKSPACE/$(basename $LINUX_DIR)" C-m
+          sudo -u $SSH_USER tmux send-keys -t terraria "$EXEC_CMD -worldpath $GITHUB_WORKSPACE/server_data/Worlds -world $GITHUB_WORKSPACE/server_data/Worlds/GithubWorld.wld -autocreate 2 -port 7777" C-m
 
-          echo ">>> [4] Mở Port với Tailscale..."
+          echo ">>> [5] Mở Port với Tailscale..."
           curl -fsSL https://tailscale.com/install.sh | sh
           sudo tailscale up --authkey="$TAILSCALE_KEY" --hostname="gh-linux-gameserver"
           TS_IP=$(sudo tailscale ip -4)
@@ -169,7 +184,7 @@ jobs:
           echo "🌐 IP Game (Port 7777): $TS_IP"
           echo "💻 Lệnh SSH: ssh $SSH_USER@$TS_IP"
           echo "🔑 Mật khẩu: $SSH_PASS"
-          echo "👉 Khi vào SSH, gõ: 'tmux attach -t terraria' để xem Console Game."
+          echo "👉 SSH xong, gõ: 'tmux attach -t terraria' để xem."
           echo "=============================================="
 
           for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ Còn $i phút..."; sleep 60; done
