@@ -1,4 +1,4 @@
-name: Temporary VPS (pinggy.io - All Platforms)
+name: Temporary VPS (serveo.net - fixed)
 
 on:
   workflow_dispatch:
@@ -46,11 +46,11 @@ on:
         required: true
         default: '22'
       timezone:
-        description: '🕒 Múi giờ (vd: Asia/Ho_Chi_Minh, UTC)'
+        description: '🕒 Múi giờ'
         required: true
         default: 'UTC'
       max_runtime:
-        description: '⏱️ Max runtime (minutes, max 350)'
+        description: '⏱️ Max runtime (phút, tối đa 350)'
         required: true
         default: '330'
         type: choice
@@ -63,7 +63,7 @@ on:
           - '330'
           - '350'
       auto_rerun:
-        description: '🔄 Tự động rerun workflow khi hết thời gian? (Có thể tắt bằng Cancel workflow)'
+        description: '🔄 Tự động rerun khi hết giờ?'
         required: true
         default: 'yes'
         type: choice
@@ -89,7 +89,7 @@ jobs:
           echo "max=$MAX" >> $GITHUB_OUTPUT
 
       # ==========================================
-      # 🐧 LINUX (SSH / RDP) + pinggy.io
+      # 🐧 LINUX (SSH / RDP) + serveo.net
       # ==========================================
       - name: Setup Linux VPS
         if: runner.os == 'Linux'
@@ -119,9 +119,9 @@ jobs:
           fi
           echo "$SSH_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$SSH_USER
 
-          # Cài đặt desktop nếu cần
+          # Cài desktop nếu cần
           if [ "$CONNECTION_TYPE" = "rdp" ] || [ "$CONNECTION_TYPE" = "vnc" ]; then
-            echo ">>> Cài đặt XFCE4 Desktop và XRDP..."
+            echo ">>> Cài đặt XFCE4 và XRDP..."
             sudo apt update -qq
             sudo DEBIAN_FRONTEND=noninteractive apt install -y -qq xfce4 xfce4-goodies xrdp curl jq
             sudo systemctl enable xrdp
@@ -142,24 +142,25 @@ jobs:
             PROT_NAME="SSH"
           fi
 
-          # Tạo tunnel với pinggy.io (dùng cổng 443, hỗ trợ TCP)
-          echo ">>> Khởi tạo tunnel pinggy.io..."
-          nohup ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:$LOCAL_PORT pinggy.io > /tmp/pinggy.log 2>&1 &
-          sleep 5
+          # Tạo tunnel với serveo.net (đã fix)
+          echo ">>> Khởi tạo tunnel serveo.net..."
+          nohup ssh -T -N -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ServerAliveInterval=60 -o ExitOnForwardFailure=yes \
+            -R 0:localhost:$LOCAL_PORT serveo.net > /tmp/serveo.log 2>&1 &
+          sleep 8
 
-          # Lấy URL từ log: dạng "https://<random>.pinggy.io" hoặc "tcp://<random>.pinggy.io:<port>"
-          TUNNEL_URL=$(grep -o 'https\?://[^ ]*\.pinggy\.io' /tmp/pinggy.log | head -1)
+          # Lấy URL: dạng subdomain.serveo.net
+          TUNNEL_URL=$(grep -o 'https\?://[^ ]*\.serveo\.net' /tmp/serveo.log | head -1)
           if [ -z "$TUNNEL_URL" ]; then
-            TUNNEL_URL=$(grep -o '[a-z0-9-]*\.pinggy\.io' /tmp/pinggy.log | head -1)
+            TUNNEL_URL=$(grep -o '[a-z0-9-]*\.serveo\.net' /tmp/serveo.log | head -1)
             if [ -n "$TUNNEL_URL" ]; then
               TUNNEL_URL="tcp://$TUNNEL_URL"
             else
-              echo "❌ Không lấy được URL từ pinggy.io. Kiểm tra log:"
-              cat /tmp/pinggy.log
+              echo "❌ Không lấy được URL từ serveo. Kiểm tra log:"
+              cat /tmp/serveo.log
               exit 1
             fi
           fi
-          # Lấy địa chỉ không giao thức, nếu có cổng thì giữ nguyên
           TUNNEL_ADDR=$(echo $TUNNEL_URL | sed 's/^tcp:\/\///' | sed 's/^https:\/\///')
           if [ -z "$TUNNEL_ADDR" ]; then
             TUNNEL_ADDR=$TUNNEL_URL
@@ -176,17 +177,14 @@ jobs:
           for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
 
           if [ "$AUTO_RERUN" = "yes" ]; then
-            echo ">>> Hết thời gian, tự động rerun workflow..."
             curl -L -X POST -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${{ github.token }}" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/rerun
-          else
-            echo ">>> Auto-rerun đã tắt, dừng tại đây."
           fi
 
       # ==========================================
-      # 🪟 WINDOWS (SSH / RDP) + pinggy.io
+      # 🪟 WINDOWS (SSH / RDP) + serveo.net
       # ==========================================
       - name: Setup Windows VPS
         if: runner.os == 'Windows'
@@ -218,14 +216,12 @@ jobs:
                   Add-LocalGroupMember -Group "Administrators" -Member $TargetUser
               }
           } catch {
-              Write-Host "=========================================================================="
               Write-Host "❌ LỖI TẠO USER: Mật khẩu yếu hoặc vi phạm chính sách!"
               Write-Host "👉 YÊU CẦU: dài >=8, có HOA, thường, số, ký tự đặc biệt, không chứa tên user."
-              Write-Host "=========================================================================="
               exit 1
           }
 
-          # Cấu hình RDP hoặc SSH
+          # Cấu hình RDP/SSH
           if ($env:CONNECTION_TYPE -eq 'rdp' -or $env:CONNECTION_TYPE -eq 'vnc') {
               Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
               Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
@@ -245,23 +241,23 @@ jobs:
               $ProtName = "SSH"
           }
 
-          # Tạo tunnel với pinggy.io
-          Write-Host ">>> Khởi tạo tunnel pinggy.io..."
-          $sshArgs = "-p 443 -o StrictHostKeyChecking=no -R0:localhost:$LocalPort pinggy.io"
-          Start-Process -FilePath "ssh" -ArgumentList $sshArgs -RedirectStandardOutput "pinggy.log" -NoNewWindow
-          Start-Sleep -Seconds 5
+          # Tunnel serveo.net
+          Write-Host ">>> Khởi tạo tunnel serveo.net..."
+          $sshArgs = "-T -N -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=60 -o ExitOnForwardFailure=yes -R 0:localhost:$LocalPort serveo.net"
+          Start-Process -FilePath "ssh" -ArgumentList $sshArgs -RedirectStandardOutput "serveo.log" -NoNewWindow
+          Start-Sleep -Seconds 8
 
-          $logContent = Get-Content "pinggy.log" -Raw
-          $urlMatch = [regex]::Match($logContent, 'https?://([a-z0-9-]+\.pinggy\.io)')
+          $logContent = Get-Content "serveo.log" -Raw
+          $urlMatch = [regex]::Match($logContent, 'https?://([a-z0-9-]+\.serveo\.net)')
           if ($urlMatch.Success) {
               $TunnelAddr = $urlMatch.Groups[1].Value
           } else {
-              $urlMatch = [regex]::Match($logContent, '([a-z0-9-]+\.pinggy\.io)')
+              $urlMatch = [regex]::Match($logContent, '([a-z0-9-]+\.serveo\.net)')
               if ($urlMatch.Success) {
                   $TunnelAddr = $urlMatch.Groups[1].Value
               } else {
-                  Write-Host "❌ Không lấy được URL từ pinggy.io. Kiểm tra pinggy.log:"
-                  Get-Content "pinggy.log"
+                  Write-Host "❌ Không lấy được URL từ serveo. Kiểm tra serveo.log:"
+                  Get-Content "serveo.log"
                   exit 1
               }
           }
@@ -278,7 +274,6 @@ jobs:
           for ($i = $MaxMinutes; $i -gt 0; $i--) { Write-Host "⏱️ $i phút..."; Start-Sleep -Seconds 60 }
 
           if ($env:AUTO_RERUN -eq "yes") {
-              Write-Host ">>> Hết thời gian, tự động rerun workflow..."
               $headers = @{
                   "Accept" = "application/vnd.github+json"
                   "Authorization" = "Bearer ${{ github.token }}"
@@ -289,7 +284,7 @@ jobs:
           }
 
       # ==========================================
-      # 🍎 macOS (SSH / VNC) + pinggy.io
+      # 🍎 macOS (SSH / VNC) + serveo.net
       # ==========================================
       - name: Setup macOS VPS
         if: runner.os == 'macOS'
@@ -304,40 +299,38 @@ jobs:
           set -e
           brew install jq --quiet
 
-          # Tạo user
           if ! id "$SSH_USER" &>/dev/null; then
               sudo sysadminctl -addUser "$SSH_USER" -password "$SSH_PASS" -admin
           else
               sudo dscl . -passwd /Users/"$SSH_USER" "$SSH_PASS"
           fi
 
-          # Bật VNC hoặc SSH
           if [ "$CONNECTION_TYPE" = "rdp" ] || [ "$CONNECTION_TYPE" = "vnc" ]; then
-              echo ">>> Bật Screen Sharing (VNC)..."
               sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -restart -agent -privs -all
               sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -allowAccessFor -specifiedUsers
               sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -users "$SSH_USER" -access -on -privs -all
               LOCAL_PORT=5900
               PROT_NAME="VNC (Screen Sharing)"
           else
-              echo ">>> Bật Remote Login (SSH)..."
               sudo systemsetup -setremotelogin on
               LOCAL_PORT=22
               PROT_NAME="SSH"
           fi
 
-          echo ">>> Khởi tạo tunnel pinggy.io..."
-          nohup ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:$LOCAL_PORT pinggy.io > /tmp/pinggy.log 2>&1 &
-          sleep 5
+          echo ">>> Khởi tạo tunnel serveo.net..."
+          nohup ssh -T -N -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ServerAliveInterval=60 -o ExitOnForwardFailure=yes \
+            -R 0:localhost:$LOCAL_PORT serveo.net > /tmp/serveo.log 2>&1 &
+          sleep 8
 
-          TUNNEL_URL=$(grep -o 'https\?://[^ ]*\.pinggy\.io' /tmp/pinggy.log | head -1)
+          TUNNEL_URL=$(grep -o 'https\?://[^ ]*\.serveo\.net' /tmp/serveo.log | head -1)
           if [ -z "$TUNNEL_URL" ]; then
-            TUNNEL_URL=$(grep -o '[a-z0-9-]*\.pinggy\.io' /tmp/pinggy.log | head -1)
+            TUNNEL_URL=$(grep -o '[a-z0-9-]*\.serveo\.net' /tmp/serveo.log | head -1)
             if [ -n "$TUNNEL_URL" ]; then
               TUNNEL_URL="tcp://$TUNNEL_URL"
             else
-              echo "❌ Không lấy được URL từ pinggy.io. Kiểm tra log:"
-              cat /tmp/pinggy.log
+              echo "❌ Không lấy được URL từ serveo. Kiểm tra log:"
+              cat /tmp/serveo.log
               exit 1
             fi
           fi
@@ -357,11 +350,8 @@ jobs:
           for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
 
           if [ "$AUTO_RERUN" = "yes" ]; then
-            echo ">>> Hết thời gian, tự động rerun workflow..."
             curl -L -X POST -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${{ github.token }}" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/rerun
-          else
-            echo ">>> Auto-rerun đã tắt, dừng tại đây."
           fi
