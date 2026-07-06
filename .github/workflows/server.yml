@@ -1,73 +1,44 @@
-name: Terraria Master (Auto-Start & Persistent)
+name: Terraria Master (Pinggy Tunnel & Cache)
 
 on:
   workflow_dispatch:
     inputs:
       runner_os:
-        description: '💻 Hệ điều hành máy chủ'
+        description: '💻 Hệ điều hành'
         required: true
         default: 'ubuntu-24.04'
         type: choice
         options:
           - 'ubuntu-24.04'
-          - 'ubuntu-22.04'
           - 'windows-latest'
-          - 'windows-2022'
       server_type:
         description: '🎮 Loại Server'
         required: true
         default: 'Vanilla'
-        type: choice
-        options:
-          - 'Vanilla'
-          - 'TShock'
-          - 'tModLoader'
+        options: ['Vanilla', 'TShock', 'tModLoader']
       terraria_version:
-        description: '🏷️ Phiên bản (VD: 1.4.4.9, 1.4.5.6)'
+        description: '🏷️ Phiên bản'
         required: true
         default: '1.4.5.6'
         type: string
-      connection_type:
-        description: '🌐 Giao thức (SSH = Dòng lệnh, RDP = Giao diện)'
-        required: true
-        default: 'ssh'
-        type: choice
-        options:
-          - 'ssh'
-          - 'rdp'
       ssh_user:
-        description: '👤 Username tự chọn'
+        description: '👤 Username'
         required: true
         default: 'serveradmin'
-        type: string
       ssh_password:
-        description: '🔑 Mật khẩu (Có HOA, thường, số, ký tự đặc biệt)'
+        description: '🔑 Mật khẩu'
         required: true
         default: 'GameServer@2026!'
-        type: string
       max_runtime:
         description: '⏱️ Thời gian treo (phút)'
         required: true
         default: '330'
-        type: choice
-        options:
-          - '60'
-          - '120'
-          - '240'
-          - '330'
-          - '350'
+        options: ['60', '120', '240', '330', '350']
       auto_rerun:
-        description: '🔄 Tự động nối phiên chạy (Giữ World)?'
+        description: '🔄 Tự động nối phiên chạy?'
         required: true
         default: 'yes'
-        type: choice
-        options:
-          - 'yes'
-          - 'no'
-
-permissions:
-  actions: write
-  contents: read
+        options: ['yes', 'no']
 
 jobs:
   game_vps:
@@ -75,227 +46,71 @@ jobs:
     timeout-minutes: 350
 
     steps:
+      # Sử dụng Cache thay vì Artifact để lưu World
       - name: 📥 Phục hồi World & Config cũ
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          mkdir -p ./server_data/Worlds
-          sudo chmod -R 777 ./server_data
-          echo ">>> Đang quét tìm dữ liệu thế giới từ phiên chạy trước..."
-          LAST_RUN_ID=$(gh run list --workflow="${{ github.workflow }}" --status completed --limit 1 --json databaseId -q '.[0].databaseId' || true)
-          if [ ! -z "$LAST_RUN_ID" ]; then
-            gh run download $LAST_RUN_ID --name "terraria-data" --dir ./server_data || echo "Chưa có bản lưu, tạo World mới."
-          else
-            echo "Khởi tạo dữ liệu sạch."
-          fi
+        uses: actions/cache@v4
+        with:
+          path: ./server_data
+          key: terraria-persist-data
 
-      # ==========================================
-      # 🐧 XỬ LÝ TRÊN LINUX (TMUX BỀN VỮNG)
-      # ==========================================
       - name: 🐧 Setup & Start Linux Server
         if: runner.os == 'Linux'
         env:
           SSH_USER: ${{ github.event.inputs.ssh_user }}
           SSH_PASS: ${{ github.event.inputs.ssh_password }}
-          CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           SERVER_TYPE: ${{ github.event.inputs.server_type }}
           SERVER_VER: ${{ github.event.inputs.terraria_version }}
           MAX_MINUTES: ${{ github.event.inputs.max_runtime }}
-          TAILSCALE_KEY: ${{ vars.TAILSCALE_AUTHKEY }}
         run: |
           set -e
-          
-          echo ">>> [1] Tạo User ($SSH_USER) và cấp quyền Sudo..."
+          # Cấu hình Root/User
           sudo useradd -m -s /bin/bash "$SSH_USER"
           echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
           sudo usermod -aG sudo "$SSH_USER"
           echo "$SSH_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$SSH_USER
-
+          
           sudo apt update -qq && sudo apt install -y -qq curl jq unzip tmux openssh-server
+          sudo sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
           sudo systemctl restart ssh
 
-          if [ "$CONNECTION_TYPE" = "rdp" ]; then
-            sudo DEBIAN_FRONTEND=noninteractive apt install -y -qq xfce4 xrdp
-            sudo systemctl enable xrdp && sudo systemctl restart xrdp
-          fi
-
-          echo ">>> [2] Tự động dò link và tải $SERVER_TYPE bản $SERVER_VER..."
+          # Tải Game
+          mkdir -p ./terraria_server ./server_data/Worlds
           if [ "$SERVER_TYPE" == "Vanilla" ]; then
-            SHORT_VER=$(echo "$SERVER_VER" | tr -d '.')
-            URL="https://terraria.org/api/download/pc-dedicated-server/terraria-server-${SHORT_VER}.zip"
+             URL="https://terraria.org/api/download/pc-dedicated-server/terraria-server-$(echo $SERVER_VER | tr -d '.').zip"
           elif [ "$SERVER_TYPE" == "TShock" ]; then
-            URL=$(curl -s https://api.github.com/repos/Pryaxis/TShock/releases | jq -r "[.[] | select(.name | contains(\"$SERVER_VER\"))][0].assets[] | select(.name | endswith(\".zip\")).browser_download_url")
-            if [ -z "$URL" ] || [ "$URL" == "null" ]; then
-              URL=$(curl -s https://api.github.com/repos/Pryaxis/TShock/releases/latest | jq -r '.assets[] | select(.name | endswith(".zip")).browser_download_url')
-            fi
-          elif [ "$SERVER_TYPE" == "tModLoader" ]; then
-            URL="https://github.com/tModLoader/tModLoader/releases/latest/download/tModLoader.zip"
+             URL=$(curl -s https://api.github.com/repos/Pryaxis/TShock/releases | jq -r "[.[] | select(.name | contains(\"$SERVER_VER\"))][0].assets[] | select(.name | endswith(\".zip\")).browser_download_url")
+          else
+             URL="https://github.com/tModLoader/tModLoader/releases/latest/download/tModLoader.zip"
           fi
-          
-          mkdir -p ./terraria_server
           curl -sSL -o server.zip "$URL"
           unzip -q server.zip -d ./terraria_server
-          
-          LINUX_DIR=$(find ./terraria_server -type d -name "Linux" | head -n 1)
-          if [ -z "$LINUX_DIR" ]; then LINUX_DIR="./terraria_server"; fi
-          cd "$LINUX_DIR"
-          chmod +x -R . || true
+          cd $(find ./terraria_server -type d -name "Linux" | head -n 1 || echo "./terraria_server")
+          chmod +x -R .
 
-          echo ">>> [3] Cấp quyền hệ thống cho User và tạo Shortcut..."
-          # Mở khóa toàn bộ cây thư mục để user truy cập được
-          DIR=$GITHUB_WORKSPACE
-          while [ "$DIR" != "/" ]; do
-            sudo chmod 755 "$DIR" || true
-            DIR=$(dirname "$DIR")
-          done
-          
-          # Đổi chủ quyền cho user
-          sudo chown -R $SSH_USER:$SSH_USER $GITHUB_WORKSPACE/server_data
-          sudo chown -R $SSH_USER:$SSH_USER $GITHUB_WORKSPACE/terraria_server
-          
-          # Tạo lối tắt ra Desktop (Home) cho user
-          sudo ln -s $GITHUB_WORKSPACE/terraria_server /home/$SSH_USER/terraria_server
-          sudo ln -s $GITHUB_WORKSPACE/server_data /home/$SSH_USER/server_data
-          sudo chown -h $SSH_USER:$SSH_USER /home/$SSH_USER/terraria_server
-          sudo chown -h $SSH_USER:$SSH_USER /home/$SSH_USER/server_data
+          # Chạy game ngầm
+          EXEC=$(ls | grep -E "^TerrariaServer(\.bin\.x86_64)?$" | head -n 1)
+          sudo -u "$SSH_USER" tmux new-session -d -s terraria "./$EXEC -worldpath $GITHUB_WORKSPACE/server_data/Worlds -world $GITHUB_WORKSPACE/server_data/Worlds/GithubWorld.wld -autocreate 2 -port 7777"
 
-          echo ">>> [4] Khởi động Game ngầm bằng tài khoản $SSH_USER..."
-          if [ "$SERVER_TYPE" == "tModLoader" ]; then
-             EXEC_CMD="./start-tModLoaderServer.sh"
-          else
-             EXEC_FILE=$(ls | grep -E "^TerrariaServer(\.bin\.x86_64)?$" | head -n 1)
-             EXEC_CMD="./$EXEC_FILE"
-          fi
-          
-          # Kỹ thuật mở Tmux an toàn: Mở session trống trước, sau đó gõ lệnh vào. 
-          # => Nếu game lỗi, Tmux sẽ vẫn treo ở màn hình báo lỗi chứ không biến mất.
-          sudo -u $SSH_USER tmux new-session -d -s terraria
-          sudo -u $SSH_USER tmux send-keys -t terraria "cd $GITHUB_WORKSPACE/$(basename $LINUX_DIR)" C-m
-          sudo -u $SSH_USER tmux send-keys -t terraria "$EXEC_CMD -worldpath $GITHUB_WORKSPACE/server_data/Worlds -world $GITHUB_WORKSPACE/server_data/Worlds/GithubWorld.wld -autocreate 2 -port 7777" C-m
-
-          echo ">>> [5] Mở Port với Tailscale..."
-          curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --authkey="$TAILSCALE_KEY" --hostname="gh-linux-gameserver"
-          TS_IP=$(sudo tailscale ip -4)
-
+          # Tunnels bằng Pinggy
+          echo ">>> Đang mở Public Port..."
+          ssh -o StrictHostKeyChecking=no -p 443 -R0:localhost:7777 a.pinggy.io > game_port.log 2>&1 &
+          ssh -o StrictHostKeyChecking=no -p 443 -R0:localhost:22 a.pinggy.io > ssh_port.log 2>&1 &
+          sleep 5
           echo "=============================================="
-          echo "✅ SERVER $SERVER_TYPE ($SERVER_VER) ĐÃ CHẠY!"
-          echo "🌐 IP Game (Port 7777): $TS_IP"
-          echo "💻 Lệnh SSH: ssh $SSH_USER@$TS_IP"
-          echo "🔑 Mật khẩu: $SSH_PASS"
-          echo "👉 SSH xong, gõ: 'tmux attach -t terraria' để xem."
+          echo "✅ CỔNG KẾT NỐI (Copy các dòng dưới):"
+          cat game_port.log | grep -o 'tcp://.*' || echo "Đang chờ port..."
+          cat ssh_port.log | grep -o 'ssh .*' || echo "Đang chờ port..."
           echo "=============================================="
-
-          for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ Còn $i phút..."; sleep 60; done
-
-      # ==========================================
-      # 🪟 XỬ LÝ TRÊN WINDOWS
-      # ==========================================
-      - name: 🪟 Setup & Start Windows Server
-        if: runner.os == 'Windows'
-        env:
-          SSH_USER: ${{ github.event.inputs.ssh_user }}
-          SSH_PASS: ${{ github.event.inputs.ssh_password }}
-          CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
-          SERVER_TYPE: ${{ github.event.inputs.server_type }}
-          SERVER_VER: ${{ github.event.inputs.terraria_version }}
-          MAX_MINUTES: ${{ github.event.inputs.max_runtime }}
-          TAILSCALE_KEY: ${{ vars.TAILSCALE_AUTHKEY }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          
-          Write-Host ">>> [1] Tạo Admin User ($env:SSH_USER)..."
-          $Password = ConvertTo-SecureString $env:SSH_PASS -AsPlainText -Force
-          try {
-              New-LocalUser -Name $env:SSH_USER -Password $Password -FullName $env:SSH_USER -Description "Game Admin"
-              Add-LocalGroupMember -Group "Administrators" -Member $env:SSH_USER
-          } catch {
-              Set-LocalUser -Name $env:SSH_USER -Password $Password
-          }
-
-          if ($env:CONNECTION_TYPE -eq 'rdp') {
-              Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
-              Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
-          } else {
-              Start-Service sshd; Set-Service -Name sshd -StartupType 'Automatic'
-          }
-
-          Write-Host ">>> [2] Tự động lấy link tải..."
-          if ($env:SERVER_TYPE -eq 'Vanilla') {
-              $ShortVer = $env:SERVER_VER.Replace(".", "")
-              $Url = "https://terraria.org/api/download/pc-dedicated-server/terraria-server-$ShortVer.zip"
-          } elseif ($env:SERVER_TYPE -eq 'TShock') {
-              $Releases = Invoke-RestMethod -Uri "https://api.github.com/repos/Pryaxis/TShock/releases"
-              $Match = $Releases | Where-Object { $_.name -match $env:SERVER_VER } | Select-Object -First 1
-              if ($Match) {
-                  $Url = ($Match.assets | Where-Object { $_.name -match "\.zip$" } | Select-Object -First 1).browser_download_url
-              } else {
-                  Write-Host "⚠️ Không tìm thấy chính xác, dùng bản TShock mới nhất!"
-                  $Url = (Invoke-RestMethod -Uri "https://api.github.com/repos/Pryaxis/TShock/releases/latest").assets | Where-Object { $_.name -match "\.zip$" } | Select-Object -First 1 | Select-Object -ExpandProperty browser_download_url
-              }
-          } elseif ($env:SERVER_TYPE -eq 'tModLoader') {
-              $Url = "https://github.com/tModLoader/tModLoader/releases/latest/download/tModLoader.zip"
-          }
-
-          New-Item -ItemType Directory -Force -Path .\terraria_server | Out-Null
-          Invoke-WebRequest -Uri $Url -OutFile server.zip
-          Expand-Archive -Path server.zip -DestinationPath .\terraria_server -Force
-
-          $WinDir = Get-ChildItem -Path .\terraria_server -Recurse -Directory -Filter "Windows" | Select-Object -First 1
-          if (-not $WinDir) { $WinDir = Get-Item .\terraria_server }
-          Set-Location $WinDir.FullName
-
-          Write-Host ">>> [3] Khởi động Server..."
-          if ($env:SERVER_TYPE -eq 'tModLoader') { $Exec = "start-tModLoaderServer.bat" } else { $Exec = "TerrariaServer.exe" }
-          $Args = "-worldpath $env:GITHUB_WORKSPACE\server_data\Worlds -world $env:GITHUB_WORKSPACE\server_data\Worlds\GithubWorld.wld -autocreate 2 -port 7777"
-          $LogPath = "$env:GITHUB_WORKSPACE\server_data\server.log"
-          Start-Process -FilePath $Exec -ArgumentList $Args -WindowStyle Hidden -RedirectStandardOutput $LogPath -RedirectStandardError $LogPath
-
-          Write-Host ">>> [4] Mở Port với Tailscale..."
-          choco install tailscale -y --no-progress | Out-Null
-          Start-Sleep -Seconds 5
-          $env:Path += ";C:\Program Files\Tailscale"
-          tailscale up --authkey=$env:TAILSCALE_KEY --hostname="gh-windows-gameserver"
-          $TsIp = tailscale ip -4
-
-          Write-Host "=============================================="
-          Write-Host "✅ SERVER GAME ĐÃ CHẠY NGẦM!"
-          Write-Host "🌐 IP Kết nối Game: $TsIp`:7777"
-          Write-Host "💻 Đăng nhập: ssh $env:SSH_USER@$TsIp"
-          Write-Host "👉 Để xem Console log: type $LogPath"
-          Write-Host "=============================================="
-
-          $MaxMinutes = [int]$env:MAX_MINUTES
-          for ($i = $MaxMinutes; $i -gt 0; $i--) { Write-Host "⏱️ Còn $i phút..."; Start-Sleep -Seconds 60 }
-
-      # ==========================================
-      # 💾 GHI ĐÈ BẢN LƯU & TỰ ĐỘNG NỐI PHIÊN
-      # ==========================================
-      - name: 💾 Upload Artifacts (Ghi đè)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: terraria-data
-          path: ./server_data
-          overwrite: true
-          retention-days: 2
+          sleep infinity
 
       - name: 🔄 Trigger Auto Re-run
         if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AUTO_RERUN: ${{ github.event.inputs.auto_rerun }}
-        shell: bash
         run: |
-          if [ "$AUTO_RERUN" = "yes" ] && [ "${{ github.run_attempt }}" -lt 50 ]; then
-            echo ">>> Đang kích hoạt luồng chạy mới nối tiếp..."
+          if [ "${{ github.event.inputs.auto_rerun }}" == "yes" ]; then
             gh workflow run "${{ github.workflow }}" --ref "${{ github.ref }}" \
               -f runner_os="${{ github.event.inputs.runner_os }}" \
               -f server_type="${{ github.event.inputs.server_type }}" \
               -f terraria_version="${{ github.event.inputs.terraria_version }}" \
-              -f connection_type="${{ github.event.inputs.connection_type }}" \
               -f ssh_user="${{ github.event.inputs.ssh_user }}" \
               -f ssh_password="${{ github.event.inputs.ssh_password }}" \
               -f max_runtime="${{ github.event.inputs.max_runtime }}" \
