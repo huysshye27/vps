@@ -1,4 +1,4 @@
-name: Temporary VPS (Ngrok - All Platforms)
+name: Temporary VPS (zrok - All Platforms)
 
 on:
   workflow_dispatch:
@@ -62,6 +62,17 @@ on:
           - '300'
           - '330'
           - '350'
+      auto_rerun:
+        description: '🔄 Tự động rerun workflow khi hết thời gian? (Có thể tắt bằng Cancel workflow)'
+        required: true
+        default: 'yes'
+        type: choice
+        options:
+          - 'yes'
+          - 'no'
+
+permissions:
+  actions: write   # Cần thiết để gọi API rerun
 
 jobs:
   vps:
@@ -78,7 +89,7 @@ jobs:
           echo "max=$MAX" >> $GITHUB_OUTPUT
 
       # ==========================================
-      # 🐧 LINUX SETUP (SSH & XRDP)
+      # 🐧 LINUX SETUP (SSH & XRDP) + zrok
       # ==========================================
       - name: Setup Linux VPS
         if: runner.os == 'Linux'
@@ -89,16 +100,17 @@ jobs:
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
           CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
-          NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
+          ZROK_TOKEN: ${{ secrets.ZROK_TOKEN || vars.ZROK_TOKEN }}
           TIMEZONE: ${{ github.event.inputs.timezone }}
+          AUTO_RERUN: ${{ github.event.inputs.auto_rerun }}
         run: |
           set -e
           sudo timedatectl set-timezone "$TIMEZONE" || true
           
+          # Tạo user
           if [ "$ENABLE_ROOT" = "yes" ]; then
             echo "root:$SSH_PASS" | sudo chpasswd
           fi
-          
           if id "$SSH_USER" &>/dev/null; then
             echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
           else
@@ -108,6 +120,7 @@ jobs:
           fi
           echo "$SSH_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$SSH_USER
 
+          # Cài đặt desktop nếu cần
           if [ "$CONNECTION_TYPE" = "rdp" ] || [ "$CONNECTION_TYPE" = "vnc" ]; then
             echo ">>> Cài đặt XFCE4 Desktop và XRDP..."
             sudo apt update -qq
@@ -117,7 +130,7 @@ jobs:
             echo xfce4-session > /home/$SSH_USER/.xsession
             sudo chown $SSH_USER:$SSH_USER /home/$SSH_USER/.xsession
             sudo systemctl restart xrdp
-            NGROK_PORT=3389
+            ZROK_PORT=3389
             PROT_NAME="RDP"
           else
             echo ">>> Cấu hình SSH..."
@@ -126,32 +139,60 @@ jobs:
             sudo sed -i "s/^Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
             sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
             sudo systemctl restart ssh
-            NGROK_PORT=$SSH_PORT
+            ZROK_PORT=$SSH_PORT
             PROT_NAME="SSH"
           fi
 
-          echo ">>> Khởi động Ngrok..."
-          curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-          echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-          sudo apt update -qq && sudo apt install -y -qq ngrok
-          ngrok config add-authtoken "$NGROK_TOKEN"
-          nohup ngrok tcp $NGROK_PORT --log=stdout > /tmp/ngrok.log 2>&1 &
-          sleep 5
+          # Cài zrok
+          echo ">>> Cài đặt zrok..."
+          wget -q https://github.com/openziti/zrok/releases/latest/download/zrok_linux_amd64.tar.gz -O zrok.tar.gz
+          tar -xzf zrok.tar.gz
+          sudo mv zrok /usr/local/bin/
+          rm -f zrok.tar.gz
 
-          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' | sed 's/tcp:\/\///')
-          
+          # Xác thực zrok
+          if [ -n "$ZROK_TOKEN" ]; then
+            /usr/local/bin/zrok auth "$ZROK_TOKEN"
+          else
+            echo "⚠️ Không tìm thấy ZROK_TOKEN, vui lòng set trong secrets hoặc vars"
+            exit 1
+          fi
+
+          # Khởi chạy tunnel TCP
+          echo ">>> Khởi tạo tunnel zrok..."
+          nohup /usr/local/bin/zrok share public tcp $ZROK_PORT --headless -o json > /tmp/zrok.json 2>&1 &
+          sleep 5
+          # Lấy URL public
+          ZROK_URL=$(cat /tmp/zrok.json | jq -r '.frontendEndpoint' | sed 's/^tcp:\/\///')
+          if [ -z "$ZROK_URL" ]; then
+            echo "❌ Không lấy được URL từ zrok. Kiểm tra log:"
+            cat /tmp/zrok.json
+            exit 1
+          fi
+
           echo "=============================================="
           echo "✅ LINUX VPS SẴN SÀNG ($PROT_NAME)!"
           echo "🖥️ OS: Ubuntu (${{ github.event.inputs.runner_os }})"
           echo "👤 User: $SSH_USER"
           echo "🔑 Pass: $SSH_PASS"
-          echo "🌐 Địa chỉ kết nối: $NGROK_URL"
+          echo "🌐 Địa chỉ kết nối: $ZROK_URL"
           echo "=============================================="
 
+          # Đếm ngược và tự động rerun nếu bật
           for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
 
+          if [ "$AUTO_RERUN" = "yes" ]; then
+            echo ">>> Hết thời gian, tự động rerun workflow..."
+            curl -L -X POST -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${{ github.token }}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/rerun
+          else
+            echo ">>> Auto-rerun đã tắt, dừng tại đây."
+          fi
+
       # ==========================================
-      # 🪟 WINDOWS SETUP (SSH & RDP)
+      # 🪟 WINDOWS SETUP (SSH & RDP) + zrok
       # ==========================================
       - name: Setup Windows VPS
         if: runner.os == 'Windows'
@@ -162,20 +203,21 @@ jobs:
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
           CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
-          NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
+          ZROK_TOKEN: ${{ secrets.ZROK_TOKEN || vars.ZROK_TOKEN }}
+          AUTO_RERUN: ${{ github.event.inputs.auto_rerun }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          choco install ngrok -y --no-progress | Out-Null
+          # Cài jq (cần cho parse JSON)
+          choco install jq -y --no-progress | Out-Null
 
+          # Tạo user
           $Password = ConvertTo-SecureString $env:SSH_PASS -AsPlainText -Force
-          
           if ($env:ENABLE_ROOT -eq "yes") {
               $TargetUser = "runneradmin"
           } else {
               $TargetUser = $env:SSH_USER
           }
-          
           try {
               if (Get-LocalUser -Name $TargetUser -ErrorAction SilentlyContinue) {
                   Set-LocalUser -Name $TargetUser -Password $Password
@@ -185,20 +227,18 @@ jobs:
               }
           } catch {
               Write-Host "=========================================================================="
-              Write-Host "❌ LỖI TẠO USER: Mật khẩu bạn nhập quá yếu hoặc vi phạm chính sách Windows!"
-              Write-Host "👉 YÊU CẦU BẮT BUỘC:"
-              Write-Host "   1. Dài tối thiểu 8 ký tự."
-              Write-Host "   2. Phải có: Chữ HOA, chữ thường, SỐ và Ký tự đặc biệt (VD: @, !, #)."
-              Write-Host "   3. KHÔNG ĐƯỢC chứa tên user (vd: user là 'runner' thì pass không có chữ 'runner')."
+              Write-Host "❌ LỖI TẠO USER: Mật khẩu yếu hoặc vi phạm chính sách!"
+              Write-Host "👉 YÊU CẦU: dài >=8, có HOA, thường, số, ký tự đặc biệt, không chứa tên user."
               Write-Host "=========================================================================="
               exit 1
           }
 
+          # Cấu hình RDP hoặc SSH
           if ($env:CONNECTION_TYPE -eq 'rdp' -or $env:CONNECTION_TYPE -eq 'vnc') {
               Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
               Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
               Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
-              $NgrokPort = 3389
+              $ZrokPort = 3389
               $ProtName = "RDP"
           } else {
               Start-Service sshd
@@ -209,30 +249,64 @@ jobs:
                   Restart-Service sshd
               }
               New-NetFirewallRule -Name "Open SSH Port" -DisplayName "Open SSH Port" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort $env:SSH_PORT | Out-Null
-              $NgrokPort = $env:SSH_PORT
+              $ZrokPort = $env:SSH_PORT
               $ProtName = "SSH"
           }
 
-          ngrok config add-authtoken $env:NGROK_TOKEN
-          Start-Process -FilePath "ngrok" -ArgumentList "tcp $NgrokPort" -NoNewWindow
-          Start-Sleep -Seconds 5
+          # Cài zrok
+          Write-Host ">>> Cài zrok..."
+          Invoke-WebRequest -Uri "https://github.com/openziti/zrok/releases/latest/download/zrok_windows_amd64.zip" -OutFile "zrok.zip"
+          Expand-Archive -Path "zrok.zip" -DestinationPath "."
+          Move-Item -Path "zrok.exe" -Destination "$env:USERPROFILE\zrok.exe" -Force
+          $env:Path += ";$env:USERPROFILE"
 
-          $Tunnels = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
-          $NgrokUrl = $Tunnels.tunnels[0].public_url -replace "tcp://", ""
+          # Xác thực
+          if ($env:ZROK_TOKEN) {
+              & "$env:USERPROFILE\zrok.exe" auth $env:ZROK_TOKEN
+          } else {
+              Write-Host "⚠️ Không tìm thấy ZROK_TOKEN, vui lòng set trong secrets hoặc vars"
+              exit 1
+          }
+
+          # Khởi chạy tunnel
+          Write-Host ">>> Khởi tạo tunnel zrok..."
+          Start-Process -FilePath "$env:USERPROFILE\zrok.exe" -ArgumentList "share public tcp $ZrokPort --headless -o json" -RedirectStandardOutput "zrok.json" -NoNewWindow
+          Start-Sleep -Seconds 5
+          $ZrokUrl = (Get-Content "zrok.json" | jq -r '.frontendEndpoint') -replace "^tcp://", ""
+          if (-not $ZrokUrl) {
+              Write-Host "❌ Không lấy được URL từ zrok. Kiểm tra zrok.json:"
+              Get-Content "zrok.json"
+              exit 1
+          }
 
           Write-Host "=============================================="
           Write-Host "✅ WINDOWS VPS SẴN SÀNG ($ProtName)!"
           Write-Host "🖥️ OS: Windows (${{ github.event.inputs.runner_os }})"
           Write-Host "👤 User: $TargetUser"
           Write-Host "🔑 Pass: $env:SSH_PASS"
-          Write-Host "🌐 Địa chỉ kết nối: $NgrokUrl"
+          Write-Host "🌐 Địa chỉ kết nối: $ZrokUrl"
           Write-Host "=============================================="
 
+          # Đếm ngược
           $MaxMinutes = [int]$env:MAX_MINUTES
           for ($i = $MaxMinutes; $i -gt 0; $i--) { Write-Host "⏱️ $i phút..."; Start-Sleep -Seconds 60 }
 
+          # Tự động rerun
+          if ($env:AUTO_RERUN -eq "yes") {
+              Write-Host ">>> Hết thời gian, tự động rerun workflow..."
+              $headers = @{
+                  "Accept" = "application/vnd.github+json"
+                  "Authorization" = "Bearer ${{ github.token }}"
+                  "X-GitHub-Api-Version" = "2022-11-28"
+              }
+              $uri = "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/rerun"
+              Invoke-RestMethod -Method POST -Uri $uri -Headers $headers
+          } else {
+              Write-Host ">>> Auto-rerun đã tắt, dừng tại đây."
+          }
+
       # ==========================================
-      # 🍎 macOS SETUP (SSH & VNC)
+      # 🍎 macOS SETUP (SSH & VNC) + zrok
       # ==========================================
       - name: Setup macOS VPS
         if: runner.os == 'macOS'
@@ -242,48 +316,77 @@ jobs:
           CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
-          NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
+          ZROK_TOKEN: ${{ secrets.ZROK_TOKEN || vars.ZROK_TOKEN }}
+          AUTO_RERUN: ${{ github.event.inputs.auto_rerun }}
         run: |
           set -e
           brew install jq --quiet
-          
+
+          # Tạo user
           if ! id "$SSH_USER" &>/dev/null; then
               sudo sysadminctl -addUser "$SSH_USER" -password "$SSH_PASS" -admin
           else
               sudo dscl . -passwd /Users/"$SSH_USER" "$SSH_PASS"
           fi
 
+          # Bật VNC hoặc SSH
           if [ "$CONNECTION_TYPE" = "rdp" ] || [ "$CONNECTION_TYPE" = "vnc" ]; then
               echo ">>> Bật Screen Sharing (VNC)..."
               sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -restart -agent -privs -all
               sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -allowAccessFor -specifiedUsers
               sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -users "$SSH_USER" -access -on -privs -all
-              NGROK_PORT=5900
+              ZROK_PORT=5900
               PROT_NAME="VNC (Screen Sharing)"
           else
               echo ">>> Bật Remote Login (SSH)..."
               sudo systemsetup -setremotelogin on
-              NGROK_PORT=22
+              ZROK_PORT=22
               PROT_NAME="SSH"
           fi
 
-          echo ">>> Cài đặt Ngrok..."
-          curl -sSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-amd64.tgz -o ngrok.tgz
-          tar -xzf ngrok.tgz
-          sudo mv ngrok /usr/local/bin/
+          # Cài zrok
+          echo ">>> Cài đặt zrok..."
+          curl -sL https://github.com/openziti/zrok/releases/latest/download/zrok_darwin_amd64.tar.gz -o zrok.tar.gz
+          tar -xzf zrok.tar.gz
+          sudo mv zrok /usr/local/bin/
+          rm -f zrok.tar.gz
 
-          ngrok config add-authtoken "$NGROK_TOKEN"
-          nohup ngrok tcp $NGROK_PORT --log=stdout > /tmp/ngrok.log 2>&1 &
+          # Xác thực
+          if [ -n "$ZROK_TOKEN" ]; then
+            /usr/local/bin/zrok auth "$ZROK_TOKEN"
+          else
+            echo "⚠️ Không tìm thấy ZROK_TOKEN, vui lòng set trong secrets hoặc vars"
+            exit 1
+          fi
+
+          # Khởi chạy tunnel
+          echo ">>> Khởi tạo tunnel zrok..."
+          nohup /usr/local/bin/zrok share public tcp $ZROK_PORT --headless -o json > /tmp/zrok.json 2>&1 &
           sleep 5
-
-          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' | sed 's/tcp:\/\///')
+          ZROK_URL=$(cat /tmp/zrok.json | jq -r '.frontendEndpoint' | sed 's/^tcp:\/\///')
+          if [ -z "$ZROK_URL" ]; then
+            echo "❌ Không lấy được URL từ zrok. Kiểm tra log:"
+            cat /tmp/zrok.json
+            exit 1
+          fi
 
           echo "=============================================="
           echo "✅ macOS VPS SẴN SÀNG ($PROT_NAME)!"
           echo "🖥️ OS: macOS (${{ github.event.inputs.runner_os }})"
           echo "👤 User: $SSH_USER"
           echo "🔑 Pass: $SSH_PASS"
-          echo "🌐 Địa chỉ kết nối: $NGROK_URL"
+          echo "🌐 Địa chỉ kết nối: $ZROK_URL"
           echo "=============================================="
 
+          # Đếm ngược và rerun
           for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
+
+          if [ "$AUTO_RERUN" = "yes" ]; then
+            echo ">>> Hết thời gian, tự động rerun workflow..."
+            curl -L -X POST -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${{ github.token }}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/rerun
+          else
+            echo ">>> Auto-rerun đã tắt, dừng tại đây."
+          fi
