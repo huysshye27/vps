@@ -1,4 +1,4 @@
-name: Terraria Server (Custom Version + Auto Re-run)
+name: Terraria Server (Vanilla/TML + Auto Re-run)
 
 on:
   workflow_dispatch:
@@ -11,16 +11,10 @@ on:
         options:
           - 'vanilla'
           - 'tmodloader'
-      vanilla_version:
-        description: '📦 Phiên bản Vanilla (vd: 1.4.5.6)'
+      version:
+        description: '📦 Phiên bản (vd: 1.4.5.6 cho vanilla hoặc v2022.09.47.0 cho TML)'
         required: true
         default: '1.4.5.6'
-        type: string
-      tmod_version:
-        description: '📦 Phiên bản tModLoader (vd: v2022.09.47.0)'
-        required: true
-        default: 'v2022.09.47.0'
-        type: string
       ssh_user:
         description: '👤 SSH username'
         required: true
@@ -47,7 +41,7 @@ on:
           - '330'
           - '350'
       auto_rerun:
-        description: '🔄 Tự động re-run all jobs khi hết giờ?'
+        description: '🔄 Tự động re-run & khôi phục world?'
         required: true
         default: 'no'
         type: choice
@@ -109,42 +103,40 @@ jobs:
           sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo systemctl restart ssh
 
-      - name: Download and verify Vanilla server
+      - name: Install Server (Vanilla)
         if: github.event.inputs.server_type == 'vanilla' && ( github.event.inputs.auto_rerun != 'yes' || ! -d '/opt/terraria' )
         run: |
-          VER="${{ github.event.inputs.vanilla_version }}"
-          URL="https://terraria.org/api/download/pc-dedicated-server/terraria-server-${VER}.zip"
-          echo "Kiểm tra URL: $URL"
-          if ! wget --spider -q "$URL"; then
-            echo "❌ Phiên bản không tồn tại hoặc URL sai: $VER"
-            exit 1
-          fi
+          VER="${{ github.event.inputs.version }}"
+          echo ">>> Tải Terraria Server $VER..."
           sudo mkdir -p /opt/terraria
-          wget -q "$URL" -O /tmp/terraria.zip
+          wget -q "https://terraria.org/api/download/pc-dedicated-server/terraria-server-${VER}.zip" -O /tmp/terraria.zip
           sudo unzip -o /tmp/terraria.zip -d /opt/terraria
-          DIR=$(find /opt/terraria -maxdepth 2 -type f -name 'TerrariaServer' 2>/dev/null | head -1 | xargs dirname)
-          [ -n "$DIR" ] && sudo chmod -R +x "$DIR"
-
-      - name: Download and verify tModLoader server
-        if: github.event.inputs.server_type == 'tmodloader' && ( github.event.inputs.auto_rerun != 'yes' || ! -d '/opt/tmodloader' )
-        run: |
-          VER="${{ github.event.inputs.tmod_version }}"
-          URL="https://github.com/tModLoader/tModLoader/releases/download/${VER}/tModLoader.zip"
-          echo "Kiểm tra URL: $URL"
-          if ! wget --spider -q "$URL"; then
-            echo "❌ Phiên bản tModLoader không tồn tại: $VER"
-            exit 1
+          DIR=$(find /opt/terraria -maxdepth 2 -type f -name 'TerrariaServer*' 2>/dev/null | head -1 | xargs dirname)
+          if [ -n "$DIR" ]; then
+            sudo chmod -R +x "$DIR"
+            echo "✅ Server được cài tại $DIR"
+          else
+            echo "⚠️ Không tìm thấy file thực thi TerrariaServer"
           fi
+
+        - name: Install Server (tModLoader)
+          if: github.event.inputs.server_type == 'tmodloader' && ( github.event.inputs.auto_rerun != 'yes' || ! -d '/opt/tmodloader' )
+          run: |
+          VER="${{ github.event.inputs.version }}"
+          echo ">>> Tải tModLoader $VER..."
           sudo mkdir -p /opt/tmodloader
-          wget -q "$URL" -O /tmp/tmod.zip
+          wget -q "https://github.com/tModLoader/tModLoader/releases/download/${VER}/tModLoader.zip" -O /tmp/tmod.zip
           sudo unzip -o /tmp/tmod.zip -d /opt/tmodloader
-          sudo chmod +x /opt/tmodloader/tModLoaderServer*
+          sudo chmod +x /opt/tmodloader/tModLoaderServer* 2>/dev/null || true
+          echo "✅ tModLoader đã sẵn sàng"
 
       - name: Start server in tmux
         run: |
           USER_HOME="/home/${{ github.event.inputs.ssh_user }}"
           WORLD_DIR="$USER_HOME/.local/share/Terraria/Worlds"
           mkdir -p "$WORLD_DIR"
+
+          # Nếu re-run và đã có world -> tự động dùng world đầu tiên
           if [ "${{ github.event.inputs.auto_rerun }}" == "yes" ] && [ "$(ls -A "$WORLD_DIR"/*.wld 2>/dev/null)" ]; then
             WORLD_NAME=$(basename "$(ls "$WORLD_DIR"/*.wld | head -1)" .wld)
             cat > "$USER_HOME/serverconfig.txt" << EOF
@@ -168,7 +160,7 @@ jobs:
 
           cd "$SERVER_DIR"
           sudo -u "${{ github.event.inputs.ssh_user }}" tmux new-session -d -s terraria "$EXEC $CONFIG_ARG"
-          echo "✅ Server đã khởi động trong tmux session 'terraria'"
+          echo "✅ Server đã được khởi động trong tmux session 'terraria'"
 
       - name: Setup Ngrok & expose SSH
         run: |
@@ -185,13 +177,15 @@ jobs:
       - name: Show connection info
         run: |
           echo "=============================================="
-          echo "✅ TERRARIA SERVER SẴN SÀNG"
-          echo "🎮 Loại: ${{ github.event.inputs.server_type }}"
+          echo "✅ TERARIA SERVER SẴN SÀNG"
+          echo "🎮 Loại: ${{ github.event.inputs.server_type }} (v${{ github.event.inputs.version }})"
           echo "🌐 SSH: ssh -p $SSH_PORT ${{ github.event.inputs.ssh_user }}@$SSH_HOST"
           echo "🔑 Pass: ${{ github.event.inputs.ssh_password }}"
           echo ""
-          echo "🕹️ Sau khi SSH: tmux attach -t terraria  (Ctrl+B D để thoát)"
-          echo "📡 Chơi game: ssh -L 7777:localhost:7777 -p $SSH_PORT ${{ github.event.inputs.ssh_user }}@$SSH_HOST"
+          echo "🕹️ Sau khi SSH, dùng: tmux attach -t terraria"
+          echo "   (Ctrl+B, D để thoát)"
+          echo "📡 Để chơi game, từ máy của bạn chạy:"
+          echo "   ssh -L 7777:localhost:7777 -p $SSH_PORT ${{ github.event.inputs.ssh_user }}@$SSH_HOST"
           echo "   rồi kết nối Terraria đến localhost:7777"
           echo "=============================================="
 
@@ -221,14 +215,27 @@ jobs:
             -C / opt/terraria opt/tmodloader \
             home/${{ github.event.inputs.ssh_user }}/.local/share/Terraria \
             home/${{ github.event.inputs.ssh_user }}/serverconfig.txt 2>/dev/null || true
+        continue-on-error: true
+
+      - name: Upload artifact for re-run
+        if: github.event.inputs.auto_rerun == 'yes'
         uses: actions/upload-artifact@v4
         with:
           name: terraria-data
           path: /tmp/terraria-data.tar.gz
+          retention-days: 1
 
-      - name: Re-run all jobs
+      - name: Trigger re-run
         if: github.event.inputs.auto_rerun == 'yes'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run rerun ${{ github.run_id }}
+          gh workflow run "server.yml" \
+            --ref "${{ github.ref_name }}" \
+            -f server_type="${{ github.event.inputs.server_type }}" \
+            -f version="${{ github.event.inputs.version }}" \
+            -f ssh_user="${{ github.event.inputs.ssh_user }}" \
+            -f ssh_password="${{ github.event.inputs.ssh_password }}" \
+            -f timezone="${{ github.event.inputs.timezone }}" \
+            -f max_runtime="${{ steps.runtime.outputs.max }}" \
+            -f auto_rerun="yes"
