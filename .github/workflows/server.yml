@@ -148,11 +148,11 @@ jobs:
           if [ "${{ github.event.inputs.auto_rerun }}" == "yes" ] && [ "$(ls -A "$WORLD_DIR"/*.wld 2>/dev/null)" ]; then
             WORLD_NAME=$(basename "$(ls "$WORLD_DIR"/*.wld | head -1)" .wld)
             cat > "$USER_HOME/serverconfig.txt" << EOF
-world=$WORLD_DIR/$WORLD_NAME.wld
-maxplayers=16
-port=7777
-password=
-EOF
+            world=$WORLD_DIR/$WORLD_NAME.wld
+            maxplayers=16
+            port=7777
+            password=
+            EOF
             CONFIG_ARG="-config $USER_HOME/serverconfig.txt"
           else
             CONFIG_ARG=""
