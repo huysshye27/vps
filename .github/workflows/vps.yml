@@ -1,4 +1,4 @@
-name: Temporary VPS (zrok - All Platforms)
+name: Temporary VPS (sish - All Platforms)
 
 on:
   workflow_dispatch:
@@ -72,7 +72,7 @@ on:
           - 'no'
 
 permissions:
-  actions: write   # Cần thiết để gọi API rerun
+  actions: write
 
 jobs:
   vps:
@@ -89,7 +89,7 @@ jobs:
           echo "max=$MAX" >> $GITHUB_OUTPUT
 
       # ==========================================
-      # 🐧 LINUX SETUP (SSH & XRDP) + zrok
+      # 🐧 LINUX (SSH / RDP) + sish
       # ==========================================
       - name: Setup Linux VPS
         if: runner.os == 'Linux'
@@ -100,13 +100,12 @@ jobs:
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
           CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
-          ZROK_TOKEN: ${{ secrets.ZROK_TOKEN || vars.ZROK_TOKEN }}
           TIMEZONE: ${{ github.event.inputs.timezone }}
           AUTO_RERUN: ${{ github.event.inputs.auto_rerun }}
         run: |
           set -e
           sudo timedatectl set-timezone "$TIMEZONE" || true
-          
+
           # Tạo user
           if [ "$ENABLE_ROOT" = "yes" ]; then
             echo "root:$SSH_PASS" | sudo chpasswd
@@ -130,7 +129,7 @@ jobs:
             echo xfce4-session > /home/$SSH_USER/.xsession
             sudo chown $SSH_USER:$SSH_USER /home/$SSH_USER/.xsession
             sudo systemctl restart xrdp
-            ZROK_PORT=3389
+            LOCAL_PORT=3389
             PROT_NAME="RDP"
           else
             echo ">>> Cấu hình SSH..."
@@ -139,35 +138,34 @@ jobs:
             sudo sed -i "s/^Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
             sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
             sudo systemctl restart ssh
-            ZROK_PORT=$SSH_PORT
+            LOCAL_PORT=$SSH_PORT
             PROT_NAME="SSH"
           fi
 
-          # Cài zrok
-          echo ">>> Cài đặt zrok..."
-          wget -q https://github.com/openziti/zrok/releases/latest/download/zrok_linux_amd64.tar.gz -O zrok.tar.gz
-          tar -xzf zrok.tar.gz
-          sudo mv zrok /usr/local/bin/
-          rm -f zrok.tar.gz
-
-          # Xác thực zrok
-          if [ -n "$ZROK_TOKEN" ]; then
-            /usr/local/bin/zrok auth "$ZROK_TOKEN"
-          else
-            echo "⚠️ Không tìm thấy ZROK_TOKEN, vui lòng set trong secrets hoặc vars"
-            exit 1
-          fi
-
-          # Khởi chạy tunnel TCP
-          echo ">>> Khởi tạo tunnel zrok..."
-          nohup /usr/local/bin/zrok share public tcp $ZROK_PORT --headless -o json > /tmp/zrok.json 2>&1 &
+          # Cài sish client (ssh) đã có sẵn, chỉ cần tạo tunnel
+          echo ">>> Khởi tạo tunnel sish (sish.io)..."
+          # Sử dụng ssh để tạo tunnel TCP, lấy subdomain ngẫu nhiên
+          # Chạy trong background, log ra file
+          nohup ssh -o StrictHostKeyChecking=no -R 0:localhost:$LOCAL_PORT sish.io > /tmp/sish.log 2>&1 &
           sleep 5
-          # Lấy URL public
-          ZROK_URL=$(cat /tmp/zrok.json | jq -r '.frontendEndpoint' | sed 's/^tcp:\/\///')
-          if [ -z "$ZROK_URL" ]; then
-            echo "❌ Không lấy được URL từ zrok. Kiểm tra log:"
-            cat /tmp/zrok.json
-            exit 1
+
+          # Lấy URL từ log (dòng chứa "forwarding" hoặc "tunnel")
+          SISH_URL=$(grep -o 'https\?://[^ ]*\.sish\.io' /tmp/sish.log | head -1)
+          if [ -z "$SISH_URL" ]; then
+            # Nếu không có, thử lấy từ log khác
+            SISH_URL=$(grep -o '[a-z0-9-]*\.sish\.io' /tmp/sish.log | head -1)
+            if [ -n "$SISH_URL" ]; then
+              SISH_URL="tcp://$SISH_URL"
+            else
+              echo "❌ Không lấy được URL từ sish. Kiểm tra log:"
+              cat /tmp/sish.log
+              exit 1
+            fi
+          fi
+          # Chuyển tcp:// thành địa chỉ không giao thức
+          SISH_ADDR=$(echo $SISH_URL | sed 's/^tcp:\/\///' | sed 's/^https:\/\///')
+          if [ -z "$SISH_ADDR" ]; then
+            SISH_ADDR=$SISH_URL
           fi
 
           echo "=============================================="
@@ -175,7 +173,7 @@ jobs:
           echo "🖥️ OS: Ubuntu (${{ github.event.inputs.runner_os }})"
           echo "👤 User: $SSH_USER"
           echo "🔑 Pass: $SSH_PASS"
-          echo "🌐 Địa chỉ kết nối: $ZROK_URL"
+          echo "🌐 Địa chỉ kết nối: $SISH_ADDR"
           echo "=============================================="
 
           # Đếm ngược và tự động rerun nếu bật
@@ -192,7 +190,7 @@ jobs:
           fi
 
       # ==========================================
-      # 🪟 WINDOWS SETUP (SSH & RDP) + zrok
+      # 🪟 WINDOWS (SSH / RDP) + sish
       # ==========================================
       - name: Setup Windows VPS
         if: runner.os == 'Windows'
@@ -203,12 +201,10 @@ jobs:
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
           CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
-          ZROK_TOKEN: ${{ secrets.ZROK_TOKEN || vars.ZROK_TOKEN }}
           AUTO_RERUN: ${{ github.event.inputs.auto_rerun }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          # Cài jq (cần cho parse JSON)
           choco install jq -y --no-progress | Out-Null
 
           # Tạo user
@@ -238,7 +234,7 @@ jobs:
               Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
               Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
               Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
-              $ZrokPort = 3389
+              $LocalPort = 3389
               $ProtName = "RDP"
           } else {
               Start-Service sshd
@@ -249,34 +245,31 @@ jobs:
                   Restart-Service sshd
               }
               New-NetFirewallRule -Name "Open SSH Port" -DisplayName "Open SSH Port" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort $env:SSH_PORT | Out-Null
-              $ZrokPort = $env:SSH_PORT
+              $LocalPort = $env:SSH_PORT
               $ProtName = "SSH"
           }
 
-          # Cài zrok
-          Write-Host ">>> Cài zrok..."
-          Invoke-WebRequest -Uri "https://github.com/openziti/zrok/releases/latest/download/zrok_windows_amd64.zip" -OutFile "zrok.zip"
-          Expand-Archive -Path "zrok.zip" -DestinationPath "."
-          Move-Item -Path "zrok.exe" -Destination "$env:USERPROFILE\zrok.exe" -Force
-          $env:Path += ";$env:USERPROFILE"
-
-          # Xác thực
-          if ($env:ZROK_TOKEN) {
-              & "$env:USERPROFILE\zrok.exe" auth $env:ZROK_TOKEN
-          } else {
-              Write-Host "⚠️ Không tìm thấy ZROK_TOKEN, vui lòng set trong secrets hoặc vars"
-              exit 1
-          }
-
-          # Khởi chạy tunnel
-          Write-Host ">>> Khởi tạo tunnel zrok..."
-          Start-Process -FilePath "$env:USERPROFILE\zrok.exe" -ArgumentList "share public tcp $ZrokPort --headless -o json" -RedirectStandardOutput "zrok.json" -NoNewWindow
+          # Tạo tunnel sish (dùng ssh có sẵn trên Windows)
+          Write-Host ">>> Khởi tạo tunnel sish (sish.io)..."
+          # Sử dụng ssh từ Windows (đã cài OpenSSH Client)
+          $sshCmd = "ssh -o StrictHostKeyChecking=no -R 0:localhost:$LocalPort sish.io"
+          Start-Process -FilePath "ssh" -ArgumentList "-o StrictHostKeyChecking=no -R 0:localhost:$LocalPort sish.io" -RedirectStandardOutput "sish.log" -NoNewWindow
           Start-Sleep -Seconds 5
-          $ZrokUrl = (Get-Content "zrok.json" | jq -r '.frontendEndpoint') -replace "^tcp://", ""
-          if (-not $ZrokUrl) {
-              Write-Host "❌ Không lấy được URL từ zrok. Kiểm tra zrok.json:"
-              Get-Content "zrok.json"
-              exit 1
+
+          # Lấy URL từ log
+          $logContent = Get-Content "sish.log" -Raw
+          $urlMatch = [regex]::Match($logContent, 'https?://([a-z0-9-]+\.sish\.io)')
+          if ($urlMatch.Success) {
+              $SishAddr = $urlMatch.Groups[1].Value
+          } else {
+              $urlMatch = [regex]::Match($logContent, '([a-z0-9-]+\.sish\.io)')
+              if ($urlMatch.Success) {
+                  $SishAddr = $urlMatch.Groups[1].Value
+              } else {
+                  Write-Host "❌ Không lấy được URL từ sish. Kiểm tra sish.log:"
+                  Get-Content "sish.log"
+                  exit 1
+              }
           }
 
           Write-Host "=============================================="
@@ -284,14 +277,13 @@ jobs:
           Write-Host "🖥️ OS: Windows (${{ github.event.inputs.runner_os }})"
           Write-Host "👤 User: $TargetUser"
           Write-Host "🔑 Pass: $env:SSH_PASS"
-          Write-Host "🌐 Địa chỉ kết nối: $ZrokUrl"
+          Write-Host "🌐 Địa chỉ kết nối: $SishAddr"
           Write-Host "=============================================="
 
           # Đếm ngược
           $MaxMinutes = [int]$env:MAX_MINUTES
           for ($i = $MaxMinutes; $i -gt 0; $i--) { Write-Host "⏱️ $i phút..."; Start-Sleep -Seconds 60 }
 
-          # Tự động rerun
           if ($env:AUTO_RERUN -eq "yes") {
               Write-Host ">>> Hết thời gian, tự động rerun workflow..."
               $headers = @{
@@ -301,12 +293,10 @@ jobs:
               }
               $uri = "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/rerun"
               Invoke-RestMethod -Method POST -Uri $uri -Headers $headers
-          } else {
-              Write-Host ">>> Auto-rerun đã tắt, dừng tại đây."
           }
 
       # ==========================================
-      # 🍎 macOS SETUP (SSH & VNC) + zrok
+      # 🍎 macOS (SSH / VNC) + sish
       # ==========================================
       - name: Setup macOS VPS
         if: runner.os == 'macOS'
@@ -316,7 +306,6 @@ jobs:
           CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
-          ZROK_TOKEN: ${{ secrets.ZROK_TOKEN || vars.ZROK_TOKEN }}
           AUTO_RERUN: ${{ github.event.inputs.auto_rerun }}
         run: |
           set -e
@@ -335,39 +324,34 @@ jobs:
               sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -restart -agent -privs -all
               sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -allowAccessFor -specifiedUsers
               sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -users "$SSH_USER" -access -on -privs -all
-              ZROK_PORT=5900
+              LOCAL_PORT=5900
               PROT_NAME="VNC (Screen Sharing)"
           else
               echo ">>> Bật Remote Login (SSH)..."
               sudo systemsetup -setremotelogin on
-              ZROK_PORT=22
+              LOCAL_PORT=22
               PROT_NAME="SSH"
           fi
 
-          # Cài zrok
-          echo ">>> Cài đặt zrok..."
-          curl -sL https://github.com/openziti/zrok/releases/latest/download/zrok_darwin_amd64.tar.gz -o zrok.tar.gz
-          tar -xzf zrok.tar.gz
-          sudo mv zrok /usr/local/bin/
-          rm -f zrok.tar.gz
-
-          # Xác thực
-          if [ -n "$ZROK_TOKEN" ]; then
-            /usr/local/bin/zrok auth "$ZROK_TOKEN"
-          else
-            echo "⚠️ Không tìm thấy ZROK_TOKEN, vui lòng set trong secrets hoặc vars"
-            exit 1
-          fi
-
-          # Khởi chạy tunnel
-          echo ">>> Khởi tạo tunnel zrok..."
-          nohup /usr/local/bin/zrok share public tcp $ZROK_PORT --headless -o json > /tmp/zrok.json 2>&1 &
+          # Tạo tunnel sish
+          echo ">>> Khởi tạo tunnel sish (sish.io)..."
+          nohup ssh -o StrictHostKeyChecking=no -R 0:localhost:$LOCAL_PORT sish.io > /tmp/sish.log 2>&1 &
           sleep 5
-          ZROK_URL=$(cat /tmp/zrok.json | jq -r '.frontendEndpoint' | sed 's/^tcp:\/\///')
-          if [ -z "$ZROK_URL" ]; then
-            echo "❌ Không lấy được URL từ zrok. Kiểm tra log:"
-            cat /tmp/zrok.json
-            exit 1
+
+          SISH_URL=$(grep -o 'https\?://[^ ]*\.sish\.io' /tmp/sish.log | head -1)
+          if [ -z "$SISH_URL" ]; then
+            SISH_URL=$(grep -o '[a-z0-9-]*\.sish\.io' /tmp/sish.log | head -1)
+            if [ -n "$SISH_URL" ]; then
+              SISH_URL="tcp://$SISH_URL"
+            else
+              echo "❌ Không lấy được URL từ sish. Kiểm tra log:"
+              cat /tmp/sish.log
+              exit 1
+            fi
+          fi
+          SISH_ADDR=$(echo $SISH_URL | sed 's/^tcp:\/\///' | sed 's/^https:\/\///')
+          if [ -z "$SISH_ADDR" ]; then
+            SISH_ADDR=$SISH_URL
           fi
 
           echo "=============================================="
@@ -375,10 +359,9 @@ jobs:
           echo "🖥️ OS: macOS (${{ github.event.inputs.runner_os }})"
           echo "👤 User: $SSH_USER"
           echo "🔑 Pass: $SSH_PASS"
-          echo "🌐 Địa chỉ kết nối: $ZROK_URL"
+          echo "🌐 Địa chỉ kết nối: $SISH_ADDR"
           echo "=============================================="
 
-          # Đếm ngược và rerun
           for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
 
           if [ "$AUTO_RERUN" = "yes" ]; then
