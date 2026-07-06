@@ -1,4 +1,4 @@
-name: Temporary VPS (Ngrok - All Platforms + Auto Re-run)
+name: Temporary VPS (Multi-OS + Auto Re-run)
 
 on:
   workflow_dispatch:
@@ -63,15 +63,15 @@ on:
           - '330'
           - '350'
       auto_rerun:
-        description: '🔄 Tự động re-run all jobs khi hết giờ?'
+        description: '🔄 Tự động re-run khi hết giờ?'
         required: true
         default: 'no'
         type: choice
         options:
           - 'yes'
           - 'no'
-      auto_rerun_save_data:
-        description: '💾 Lưu dữ liệu trước khi re-run? (chỉ khi auto rerun = yes)'
+      save_data_before_rerun:
+        description: '💾 Lưu dữ liệu trước khi re-run? (chỉ khi auto_rerun = yes)'
         required: true
         default: 'no'
         type: choice
@@ -96,9 +96,9 @@ jobs:
           if [ "$MAX" -gt 350 ]; then MAX=350; fi
           echo "max=$MAX" >> $GITHUB_OUTPUT
 
-      # ============================
+      # ========================================
       # LINUX SETUP
-      # ============================
+      # ========================================
       - name: Setup Linux VPS
         if: runner.os == 'Linux'
         env:
@@ -168,7 +168,7 @@ jobs:
             ELAPSED=$((NOW - START_TIME))
             REMAINING=$((MAX_SEC - ELAPSED))
             if [ "$AUTO_RERUN" = "yes" ] && [ $REMAINING -lt 300 ]; then
-              echo "🔄 Chuẩn bị re-run all jobs..."
+              echo "🔄 Chuẩn bị re-run..."
               break
             fi
             if [ $REMAINING -le 0 ]; then break; fi
@@ -176,9 +176,9 @@ jobs:
             sleep 60
           done
 
-      # ============================
+      # ========================================
       # WINDOWS SETUP
-      # ============================
+      # ========================================
       - name: Setup Windows VPS
         if: runner.os == 'Windows'
         env:
@@ -247,9 +247,9 @@ jobs:
             Start-Sleep -Seconds 60
           }
 
-      # ============================
+      # ========================================
       # macOS SETUP
-      # ============================
+      # ========================================
       - name: Setup macOS VPS
         if: runner.os == 'macOS'
         env:
@@ -306,28 +306,54 @@ jobs:
           done
 
       # ============================
-      # LƯU DỮ LIỆU
+      # LƯU DỮ LIỆU TRƯỚC KHI RE-RUN
       # ============================
       - name: Save data (Linux/macOS)
-        if: (runner.os == 'Linux' || runner.os == 'macOS') && github.event.inputs.auto_rerun == 'yes' && github.event.inputs.auto_rerun_save_data == 'yes'
+        if: (runner.os == 'Linux' || runner.os == 'macOS') && github.event.inputs.auto_rerun == 'yes' && github.event.inputs.save_data_before_rerun == 'yes'
+        run: |
+          tar -czf /tmp/vps-data.tar.gz -C /home runner 2>/dev/null || true
+        continue-on-error: true
+
+      - name: Upload artifact (Linux/macOS)
+        if: (runner.os == 'Linux' || runner.os == 'macOS') && github.event.inputs.auto_rerun == 'yes' && github.event.inputs.save_data_before_rerun == 'yes'
         uses: actions/upload-artifact@v4
         with:
           name: vps-data
-          path: /home/runner
+          path: /tmp/vps-data.tar.gz
+          retention-days: 1
 
       - name: Save data (Windows)
-        if: runner.os == 'Windows' && github.event.inputs.auto_rerun == 'yes' && github.event.inputs.auto_rerun_save_data == 'yes'
+        if: runner.os == 'Windows' && github.event.inputs.auto_rerun == 'yes' && github.event.inputs.save_data_before_rerun == 'yes'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path C:\Users\runner\* -DestinationPath C:\temp\vps-data.zip -Force
+        continue-on-error: true
+
+      - name: Upload artifact (Windows)
+        if: runner.os == 'Windows' && github.event.inputs.auto_rerun == 'yes' && github.event.inputs.save_data_before_rerun == 'yes'
         uses: actions/upload-artifact@v4
         with:
           name: vps-data
-          path: C:\Users\runner
+          path: C:\temp\vps-data.zip
+          retention-days: 1
 
       # ============================
-      # RE-RUN ALL JOBS
+      # RE-RUN WORKFLOW (tạo run mới giống hệt)
       # ============================
-      - name: Re-run all jobs
+      - name: Trigger re-run (create new run of this workflow)
         if: github.event.inputs.auto_rerun == 'yes'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run rerun ${{ github.run_id }}
+          gh workflow run "vps.yml" \
+            --ref "${{ github.ref_name }}" \
+            -f runner_os="${{ github.event.inputs.runner_os }}" \
+            -f connection_type="${{ github.event.inputs.connection_type }}" \
+            -f ssh_user="${{ github.event.inputs.ssh_user }}" \
+            -f ssh_password="${{ github.event.inputs.ssh_password }}" \
+            -f enable_root_ssh="${{ github.event.inputs.enable_root_ssh }}" \
+            -f ssh_port="${{ github.event.inputs.ssh_port }}" \
+            -f timezone="${{ github.event.inputs.timezone }}" \
+            -f max_runtime="${{ steps.runtime.outputs.max }}" \
+            -f auto_rerun="${{ github.event.inputs.auto_rerun }}" \
+            -f save_data_before_rerun="${{ github.event.inputs.save_data_before_rerun }}"
