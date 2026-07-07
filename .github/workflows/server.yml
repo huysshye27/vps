@@ -246,6 +246,7 @@ jobs:
           node -v || true
           npm -v || true
           docker --version || true
+          tmux -V || true
           df -h
           free -h
 
@@ -791,7 +792,7 @@ jobs:
           echo "  $PLAYIT_DIR"
           echo "============================================================"
 
-      - name: Start Terraria server
+      - name: Start Terraria server in tmux
         run: |
           set -e
 
@@ -800,7 +801,7 @@ jobs:
           SERVER_TYPE="${{ inputs.server_type }}"
 
           echo "============================================================"
-          echo "START TERRARIA SERVER"
+          echo "START TERRARIA SERVER IN TMUX"
           echo "============================================================"
           echo "Server type: $SERVER_TYPE"
           echo "World file: $WORLD_FILE"
@@ -809,59 +810,88 @@ jobs:
           echo "World size: ${{ inputs.world_size }}"
           echo "Difficulty: ${{ inputs.difficulty }}"
           echo "Runtime dir: $RUNTIME_DIR"
+          echo "tmux session: terraria"
+          echo
+          echo "Attach after SSH:"
+          echo "  tmux attach -t terraria"
+          echo
+          echo "Detach:"
+          echo "  Ctrl+B then D"
+          echo "============================================================"
+
+          mkdir -p "$LOG_DIR"
+
+          tmux kill-session -t terraria 2>/dev/null || true
+          rm -f "$SERVER_DIR/server.pid"
+          rm -f "$SERVER_DIR/start-terraria.sh"
+          : > "$LOG_DIR/server-live.log"
 
           if [ "$SERVER_TYPE" = "tshock" ]; then
-            ARGS=(
-              -world "$WORLD_FILE"
-              -autocreate "${{ inputs.world_size }}"
-              -difficulty "${{ inputs.difficulty }}"
-              -port "${{ inputs.local_port }}"
-              -maxplayers "${{ inputs.max_players }}"
-              -configpath "$TSHOCK_CONFIG_DIR"
-              -logpath "$LOG_DIR"
-            )
+            cat > "$SERVER_DIR/start-terraria.sh" <<EOF
+#!/usr/bin/env bash
+cd "$GITHUB_WORKSPACE"
+exec "$RUNTIME_DIR/TShock.Server" \\
+  -world "$WORLD_FILE" \\
+  -autocreate "${{ inputs.world_size }}" \\
+  -difficulty "${{ inputs.difficulty }}" \\
+  -port "${{ inputs.local_port }}" \\
+  -maxplayers "${{ inputs.max_players }}" \\
+  -configpath "$TSHOCK_CONFIG_DIR" \\
+  -logpath "$LOG_DIR"
+EOF
 
             if [ -n "$PASSWORD" ]; then
-              ARGS+=(-pass "$PASSWORD")
+              sed -i '$ s#$# \\\n  -pass "'"$PASSWORD"'"#' "$SERVER_DIR/start-terraria.sh"
             fi
 
-            echo "Command:"
-            printf '%q ' "$RUNTIME_DIR/TShock.Server" "${ARGS[@]}"
-            echo
-
-            "$RUNTIME_DIR/TShock.Server" "${ARGS[@]}" > "$LOG_DIR/server-live.log" 2>&1 &
-            echo $! > "$SERVER_DIR/server.pid"
-
           elif [ "$SERVER_TYPE" = "vanilla" ]; then
-            echo "Command:"
-            printf '%q ' "$RUNTIME_DIR/TerrariaServer.bin.x86_64" -config "$CONFIG_FILE"
-            echo
-
-            "$RUNTIME_DIR/TerrariaServer.bin.x86_64" -config "$CONFIG_FILE" > "$LOG_DIR/server-live.log" 2>&1 &
-            echo $! > "$SERVER_DIR/server.pid"
+            cat > "$SERVER_DIR/start-terraria.sh" <<EOF
+#!/usr/bin/env bash
+cd "$GITHUB_WORKSPACE"
+exec "$RUNTIME_DIR/TerrariaServer.bin.x86_64" -config "$CONFIG_FILE"
+EOF
 
           elif [ "$SERVER_TYPE" = "tmodloader" ]; then
-            cd "$RUNTIME_DIR"
+            cat > "$SERVER_DIR/start-terraria.sh" <<EOF
+#!/usr/bin/env bash
+cd "$RUNTIME_DIR"
+exec ./start-tModLoaderServer.sh \\
+  -config "$GITHUB_WORKSPACE/$CONFIG_FILE" \\
+  -tmlsavedirectory "$GITHUB_WORKSPACE/$SERVER_DIR"
+EOF
 
-            echo "Command:"
-            printf '%q ' ./start-tModLoaderServer.sh -config "$GITHUB_WORKSPACE/$CONFIG_FILE" -tmlsavedirectory "$GITHUB_WORKSPACE/$SERVER_DIR"
-            echo
-
-            ./start-tModLoaderServer.sh \
-              -config "$GITHUB_WORKSPACE/$CONFIG_FILE" \
-              -tmlsavedirectory "$GITHUB_WORKSPACE/$SERVER_DIR" \
-              > "$GITHUB_WORKSPACE/$LOG_DIR/server-live.log" 2>&1 &
-
-            echo $! > "$GITHUB_WORKSPACE/$SERVER_DIR/server.pid"
-            cd "$GITHUB_WORKSPACE"
+          else
+            echo "ERROR: unknown server type: $SERVER_TYPE"
+            exit 1
           fi
+
+          chmod +x "$SERVER_DIR/start-terraria.sh"
+
+          echo "============================================================"
+          echo "START SCRIPT"
+          echo "============================================================"
+          cat "$SERVER_DIR/start-terraria.sh"
+
+          tmux new-session -d -s terraria "$GITHUB_WORKSPACE/$SERVER_DIR/start-terraria.sh"
+
+          sleep 2
+
+          tmux pipe-pane -t terraria -o "cat >> '$GITHUB_WORKSPACE/$LOG_DIR/server-live.log'"
+
+          TMUX_PANE_PID="$(tmux display-message -p -t terraria '#{pane_pid}')"
+          echo "$TMUX_PANE_PID" > "$SERVER_DIR/server.pid"
 
           sleep 25
 
           echo "============================================================"
+          echo "TMUX SESSIONS"
+          echo "============================================================"
+          tmux ls || true
+
+          echo "============================================================"
           echo "PROCESS"
           echo "============================================================"
-          ps aux | grep -Ei 'Terraria|TShock|tModLoader|dotnet' | grep -v grep || true
+          ps aux | grep -Ei 'Terraria|TShock|tModLoader|dotnet|tmux' | grep -v grep || true
 
           echo "============================================================"
           echo "PORTS"
@@ -874,8 +904,10 @@ jobs:
           echo "============================================================"
           tail -n 300 "$LOG_DIR/server-live.log" || true
 
-          if ! kill -0 "$(cat "$SERVER_DIR/server.pid")" 2>/dev/null; then
-            echo "ERROR: Terraria server exited early"
+          if ! tmux has-session -t terraria 2>/dev/null; then
+            echo "ERROR: Terraria tmux session exited early."
+            echo "Full server log:"
+            cat "$LOG_DIR/server-live.log" || true
             exit 1
           fi
 
@@ -899,6 +931,10 @@ jobs:
             echo "  Ngrok: $NGROK_URL"
           fi
           echo
+          echo "tmux:"
+          echo "  Attach: tmux attach -t terraria"
+          echo "  Detach: Ctrl+B then D"
+          echo
           echo "Server:"
           echo "  Type: ${{ inputs.server_type }}"
           echo "  World: $WORLD_DIR/${{ inputs.world_name }}.wld"
@@ -907,38 +943,55 @@ jobs:
           echo "  Runtime minutes: ${{ inputs.run_minutes }}"
           echo "============================================================"
 
-      - name: Run server with live logs
+      - name: Run server with tmux monitor
         run: |
           RUN_SECONDS=$((${{ inputs.run_minutes }} * 60))
           END_TIME=$(($(date +%s) + RUN_SECONDS))
 
           echo "Running for ${{ inputs.run_minutes }} minutes..."
+          echo
+          echo "SSH attach command:"
+          echo "  tmux attach -t terraria"
+          echo
+          echo "Detach:"
+          echo "  Ctrl+B then D"
+          echo
           echo "Cancel this run to stop. It will not auto-restart on cancel/failure."
 
           while [ "$(date +%s)" -lt "$END_TIME" ]; do
+            if ! tmux has-session -t terraria 2>/dev/null; then
+              echo "ERROR: Terraria tmux session is not running."
+              echo "Last server log:"
+              tail -n 300 "$LOG_DIR/server-live.log" || true
+              exit 1
+            fi
+
             echo
             echo "============================================================"
             echo "LIVE STATUS $(date)"
             echo "============================================================"
 
+            echo "--- tmux sessions ---"
+            tmux ls || true
+
             echo "--- processes ---"
-            ps aux | grep -Ei 'Terraria|TShock|tModLoader|dotnet|playit|ngrok|xrdp|sshd' | grep -v grep || true
+            ps aux | grep -Ei 'Terraria|TShock|tModLoader|dotnet|playit|ngrok|xrdp|sshd|tmux' | grep -v grep || true
 
             echo "--- ports ---"
             lsof -i -P -n | grep -E '${{ inputs.local_port }}|3389|:${{ inputs.ssh_port }}' || true
 
             echo "--- playit logs ---"
-            tail -n 160 "$LOG_DIR/playit-live.log" || true
+            tail -n 80 "$LOG_DIR/playit-live.log" || true
 
             if [ "${{ inputs.connection_type }}" != "none" ]; then
               echo "--- ngrok log ---"
-              tail -n 80 /tmp/ngrok.log || true
+              tail -n 60 /tmp/ngrok.log || true
             fi
 
             echo "--- server log ---"
-            tail -n 180 "$LOG_DIR/server-live.log" || true
+            tail -n 120 "$LOG_DIR/server-live.log" || true
 
-            sleep 60
+            sleep 120
           done
 
       - name: Stop services
@@ -950,22 +1003,21 @@ jobs:
           echo "STOP SERVICES"
           echo "============================================================"
 
-          if [ -f "$SERVER_DIR/server.pid" ]; then
-            SERVER_PID="$(cat "$SERVER_DIR/server.pid")"
-            echo "Server PID: $SERVER_PID"
-
-            kill -INT "$SERVER_PID" 2>/dev/null || true
+          if tmux has-session -t terraria 2>/dev/null; then
+            echo "Stopping Terraria tmux session gracefully..."
+            echo "Sending 'exit' to server console."
+            tmux send-keys -t terraria "exit" C-m
             sleep 35
 
-            if kill -0 "$SERVER_PID" 2>/dev/null; then
-              echo "Server still running, sending TERM"
-              kill -TERM "$SERVER_PID" 2>/dev/null || true
+            if tmux has-session -t terraria 2>/dev/null; then
+              echo "Server still running, sending Ctrl+C."
+              tmux send-keys -t terraria C-c
               sleep 10
             fi
 
-            if kill -0 "$SERVER_PID" 2>/dev/null; then
-              echo "Server still running, sending KILL"
-              kill -KILL "$SERVER_PID" 2>/dev/null || true
+            if tmux has-session -t terraria 2>/dev/null; then
+              echo "Server still running, killing tmux session."
+              tmux kill-session -t terraria 2>/dev/null || true
             fi
           fi
 
@@ -984,7 +1036,7 @@ jobs:
           echo "============================================================"
           echo "FINAL PROCESS LIST"
           echo "============================================================"
-          ps aux | grep -Ei 'Terraria|TShock|tModLoader|dotnet|playit|ngrok' | grep -v grep || true
+          ps aux | grep -Ei 'Terraria|TShock|tModLoader|dotnet|playit|ngrok|tmux' | grep -v grep || true
 
           echo "============================================================"
           echo "FINAL SERVER TREE"
