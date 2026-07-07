@@ -683,7 +683,7 @@ jobs:
           echo "Release assets:"
           curl -s "$API_URL" | jq -r '.assets[].name' || true
 
-          PLAYIT_URL="$(curl -s "$API_URL" | jq -r '.assets[] | select(.name == "playit-linux-amd64" or (.name | test("linux-amd64$"))) | .browser_download_url' | head -n 1)"
+          PLAYIT_URL="$(curl -s "$API_URL" | jq -r '.assets[] | select(.name == "playit-linux-amd64") | .browser_download_url' | head -n 1)"
 
           if [ -z "$PLAYIT_URL" ] || [ "$PLAYIT_URL" = "null" ]; then
             echo "ERROR: Could not find playit-linux-amd64 from GitHub release."
@@ -691,8 +691,8 @@ jobs:
           fi
 
           echo "Download URL: $PLAYIT_URL"
-          curl -L "$PLAYIT_URL" -o playit-linux-amd64
-          chmod +x playit-linux-amd64
+          curl -L "$PLAYIT_URL" -o playit-agent
+          chmod +x playit-agent
 
           echo "Starting playit binary..."
           echo "HOME=$PWD/$PLAYIT_DIR/home"
@@ -704,7 +704,7 @@ jobs:
               HOME="$PWD/$PLAYIT_DIR/home" \
               XDG_CONFIG_HOME="$PWD/$PLAYIT_DIR/config" \
               SECRET_KEY="$PLAYIT_SECRET_KEY" \
-              ./playit-linux-amd64 \
+              ./playit-agent \
               > "$LOG_DIR/playit-live.log" 2>&1 &
           else
             echo "PLAYIT_SECRET_KEY is not set."
@@ -712,7 +712,7 @@ jobs:
             nohup env \
               HOME="$PWD/$PLAYIT_DIR/home" \
               XDG_CONFIG_HOME="$PWD/$PLAYIT_DIR/config" \
-              ./playit-linux-amd64 \
+              ./playit-agent \
               > "$LOG_DIR/playit-live.log" 2>&1 &
           fi
 
