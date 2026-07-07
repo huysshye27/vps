@@ -57,6 +57,11 @@ on:
         required: true
         default: "friends"
 
+      world_seed:
+        description: "Custom world seed, empty = random. Only applies when creating a new world."
+        required: false
+        default: ""
+
       world_size:
         description: "World size: 1=Small, 2=Medium, 3=Large"
         required: true
@@ -208,6 +213,7 @@ jobs:
           echo "vanilla_version=${{ inputs.vanilla_version }}"
           echo "vanilla_download_url=${{ inputs.vanilla_download_url }}"
           echo "world_name=${{ inputs.world_name }}"
+          echo "world_seed=${{ inputs.world_seed }}"
           echo "world_size=${{ inputs.world_size }}"
           echo "difficulty=${{ inputs.difficulty }}"
           echo "max_players=${{ inputs.max_players }}"
@@ -407,6 +413,7 @@ jobs:
           set -e
 
           WORLD_FILE="$WORLD_DIR/${{ inputs.world_name }}.wld"
+          WORLD_SEED="${{ inputs.world_seed }}"
 
           cat > "$CONFIG_FILE" <<EOF
           world=$WORLD_FILE
@@ -420,6 +427,10 @@ jobs:
           secure=1
           language=en-US
           EOF
+
+          if [ -n "$WORLD_SEED" ]; then
+            printf 'seed=%s\n' "$WORLD_SEED" >> "$CONFIG_FILE"
+          fi
 
           sed -i 's/^[[:space:]]*//' "$CONFIG_FILE"
 
@@ -650,19 +661,19 @@ jobs:
           echo
           find "$SERVER_DIR" -maxdepth 7 -type f | sort | head -n 1500
 
-      - name: Start playit for Terraria
+      - name: Start playit for Terraria in tmux
         run: |
           set -e
 
           echo "============================================================"
-          echo "START PLAYIT"
+          echo "START PLAYIT IN TMUX"
           echo "============================================================"
           echo "Local Terraria port: ${{ inputs.local_port }}"
           echo "Playit config dir saved at: $PLAYIT_DIR"
           echo
           echo "FIRST RUN INSTRUCTIONS:"
-          echo "1. Wait for setup/claim link below."
-          echo "2. Open the link."
+          echo "1. Open the claim/setup link printed below if it appears."
+          echo "2. If no link appears in job log, SSH in and run: tmux attach -t playit"
           echo "3. Claim this agent on playit.gg."
           echo "4. Create a TCP tunnel:"
           echo "   local address: 127.0.0.1"
@@ -673,17 +684,16 @@ jobs:
           mkdir -p "$PLAYIT_DIR"
           mkdir -p "$PLAYIT_DIR/home"
           mkdir -p "$PLAYIT_DIR/config"
+          mkdir -p "$PLAYIT_DIR/config/playit_gg"
           mkdir -p "$LOG_DIR"
           rm -f "$PLAYIT_DIR/playit.pid"
+          rm -f "$PLAYIT_DIR/start-playit.sh"
+          : > "$LOG_DIR/playit-live.log"
 
-          # playit v1.x binds its daemon socket at /run/playit/playitd.sock by default.
-          # GitHub runners do not always have this folder, so create it before starting playit.
           sudo mkdir -p /run/playit
           sudo chmod 777 /run/playit
-          mkdir -p "$PLAYIT_DIR/config/playit_gg"
 
           echo "Downloading playit Linux binary..."
-
           API_URL="https://api.github.com/repos/playit-cloud/playit-agent/releases/latest"
 
           echo "Release assets:"
@@ -700,43 +710,63 @@ jobs:
           curl -L "$PLAYIT_URL" -o playit-linux-amd64
           chmod +x playit-linux-amd64
 
-          echo "Starting playit binary..."
-          echo "HOME=$PWD/$PLAYIT_DIR/home"
-          echo "XDG_CONFIG_HOME=$PWD/$PLAYIT_DIR/config"
+          cat > "$PLAYIT_DIR/start-playit.sh" <<'EOF'
+          #!/usr/bin/env bash
+          set -e
+          cd "$GITHUB_WORKSPACE"
 
-          if [ -n "$PLAYIT_SECRET_KEY" ]; then
+          echo "============================================================"
+          echo "PLAYIT TMUX SESSION"
+          echo "============================================================"
+          echo "HOME=$GITHUB_WORKSPACE/$PLAYIT_DIR/home"
+          echo "XDG_CONFIG_HOME=$GITHUB_WORKSPACE/$PLAYIT_DIR/config"
+          echo "Attach from SSH with: tmux attach -t playit"
+          echo "Detach with: Ctrl+B then D"
+          echo "============================================================"
+
+          if [ -n "${PLAYIT_SECRET_KEY:-}" ]; then
             echo "PLAYIT_SECRET_KEY is set. Starting with secret key."
-            nohup env \
-              HOME="$PWD/$PLAYIT_DIR/home" \
-              XDG_CONFIG_HOME="$PWD/$PLAYIT_DIR/config" \
+            exec env \
+              HOME="$GITHUB_WORKSPACE/$PLAYIT_DIR/home" \
+              XDG_CONFIG_HOME="$GITHUB_WORKSPACE/$PLAYIT_DIR/config" \
               SECRET_KEY="$PLAYIT_SECRET_KEY" \
-              ./playit-linux-amd64 \
-              > "$LOG_DIR/playit-live.log" 2>&1 &
+              ./playit-linux-amd64
           else
-            echo "PLAYIT_SECRET_KEY is not set."
-            echo "Starting first-run claim/setup mode."
-            nohup env \
-              HOME="$PWD/$PLAYIT_DIR/home" \
-              XDG_CONFIG_HOME="$PWD/$PLAYIT_DIR/config" \
-              ./playit-linux-amd64 \
-              > "$LOG_DIR/playit-live.log" 2>&1 &
+            echo "PLAYIT_SECRET_KEY is not set. Starting first-run claim/setup mode."
+            exec env \
+              HOME="$GITHUB_WORKSPACE/$PLAYIT_DIR/home" \
+              XDG_CONFIG_HOME="$GITHUB_WORKSPACE/$PLAYIT_DIR/config" \
+              ./playit-linux-amd64
           fi
+          EOF
 
-          echo $! > "$PLAYIT_DIR/playit.pid"
-          echo "PLAYIT_MODE=binary" >> "$GITHUB_ENV"
+          sed -i 's/^[[:space:]]*//' "$PLAYIT_DIR/start-playit.sh"
+          chmod +x "$PLAYIT_DIR/start-playit.sh"
+
+          echo "============================================================"
+          echo "PLAYIT START SCRIPT"
+          echo "============================================================"
+          cat "$PLAYIT_DIR/start-playit.sh"
+
+          tmux kill-session -t playit 2>/dev/null || true
+          tmux new-session -d -s playit "$GITHUB_WORKSPACE/$PLAYIT_DIR/start-playit.sh"
+
+          sleep 2
+          PLAYIT_PANE_PID="$(tmux display-message -p -t playit '#{pane_pid}')"
+          echo "$PLAYIT_PANE_PID" > "$PLAYIT_DIR/playit.pid"
+          echo "PLAYIT_MODE=tmux" >> "$GITHUB_ENV"
 
           echo "Waiting for playit to print setup info..."
           sleep 10
 
           echo "============================================================"
-          echo "PLAYIT INITIAL LOG"
+          echo "PLAYIT INITIAL TMUX OUTPUT"
           echo "============================================================"
-          tail -n 300 "$LOG_DIR/playit-live.log" || true
+          tmux capture-pane -t playit -p -S -500 | tee "$LOG_DIR/playit-live.log" || true
 
           echo "============================================================"
           echo "PLAYIT SETUP LINK DETECT"
           echo "============================================================"
-
           CLAIM_LINK="$(grep -Eo 'https://[^ ]*(playit.gg|pit.gd)[^ ]*' "$LOG_DIR/playit-live.log" | head -n 1 || true)"
 
           if [ -n "$CLAIM_LINK" ]; then
@@ -748,17 +778,27 @@ jobs:
             echo "============================================================"
             echo
           else
-            echo "No setup link detected yet."
-            echo "Will keep checking for 5 minutes."
+            echo "No setup link detected in job log yet."
+            echo "This can happen when playit renders only in the tmux TTY."
+            echo "SSH in and run: tmux attach -t playit"
           fi
 
-          for i in $(seq 1 20); do
+          echo "Checking playit tmux session for up to 2 minutes, then continuing to Terraria."
+          for i in $(seq 1 8); do
             echo
             echo "============================================================"
-            echo "PLAYIT CHECK $i/20"
+            echo "PLAYIT CHECK $i/8"
             echo "============================================================"
-            tail -n 220 "$LOG_DIR/playit-live.log" || true
 
+            if ! tmux has-session -t playit 2>/dev/null; then
+              echo "ERROR: playit tmux session exited early."
+              echo "Captured playit output:"
+              tmux capture-pane -t playit -p -S -500 2>/dev/null || true
+              cat "$LOG_DIR/playit-live.log" || true
+              exit 1
+            fi
+
+            tmux capture-pane -t playit -p -S -500 | tee "$LOG_DIR/playit-live.log" || true
             NEW_LINK="$(grep -Eo 'https://[^ ]*(playit.gg|pit.gd)[^ ]*' "$LOG_DIR/playit-live.log" | head -n 1 || true)"
             if [ -n "$NEW_LINK" ]; then
               echo
@@ -770,33 +810,23 @@ jobs:
               echo
             fi
 
-            if ! kill -0 "$(cat "$PLAYIT_DIR/playit.pid")" 2>/dev/null; then
-              echo "ERROR: playit exited early."
-              echo "Full playit log:"
-              cat "$LOG_DIR/playit-live.log" || true
-              exit 1
-            fi
-
             sleep 15
           done
+
+          echo "============================================================"
+          echo "PLAYIT TMUX READY"
+          echo "============================================================"
+          echo "Attach playit console: tmux attach -t playit"
+          echo "Detach: Ctrl+B then D"
+          echo "Terraria local target: 127.0.0.1:${{ inputs.local_port }}"
+          echo "Public Terraria address: check playit.gg dashboard after setup."
+          echo "Saved playit config: $PLAYIT_DIR"
+          echo "============================================================"
 
           echo "============================================================"
           echo "PLAYIT CONFIG FILES"
           echo "============================================================"
           find "$PLAYIT_DIR" -maxdepth 8 -type f -print -exec ls -lh {} \; || true
-
-          echo "============================================================"
-          echo "PLAYIT READY INFO"
-          echo "============================================================"
-          echo "Terraria local target:"
-          echo "  127.0.0.1:${{ inputs.local_port }}"
-          echo
-          echo "Public Terraria address:"
-          echo "  Check playit.gg dashboard after setup."
-          echo
-          echo "Saved playit config:"
-          echo "  $PLAYIT_DIR"
-          echo "============================================================"
 
       - name: Start Terraria server in tmux
         run: |
@@ -804,6 +834,7 @@ jobs:
 
           WORLD_FILE="$WORLD_DIR/${{ inputs.world_name }}.wld"
           PASSWORD="${{ inputs.server_password }}"
+          WORLD_SEED="${{ inputs.world_seed }}"
           SERVER_TYPE="${{ inputs.server_type }}"
 
           echo "============================================================"
@@ -849,6 +880,9 @@ jobs:
           )
           if [ -n "$PASSWORD" ]; then
             CMD+=( -pass "$PASSWORD" )
+          fi
+          if [ -n "$WORLD_SEED" ]; then
+            CMD+=( -seed "$WORLD_SEED" )
           fi
           exec "\${CMD[@]}"
           EOF
@@ -944,7 +978,8 @@ jobs:
           fi
           echo
           echo "tmux:"
-          echo "  Attach: tmux attach -t terraria"
+          echo "  Attach Terraria: tmux attach -t terraria"
+          echo "  Attach playit: tmux attach -t playit"
           echo "  Detach: Ctrl+B then D"
           echo
           echo "Server:"
@@ -962,8 +997,9 @@ jobs:
 
           echo "Running for ${{ inputs.run_minutes }} minutes..."
           echo
-          echo "SSH attach command:"
+          echo "SSH attach commands:"
           echo "  tmux attach -t terraria"
+          echo "  tmux attach -t playit"
           echo
           echo "Detach:"
           echo "  Ctrl+B then D"
@@ -975,6 +1011,13 @@ jobs:
               echo "ERROR: Terraria tmux session is not running."
               echo "Last server log:"
               tail -n 300 "$LOG_DIR/server-live.log" || true
+              exit 1
+            fi
+
+            if ! tmux has-session -t playit 2>/dev/null; then
+              echo "ERROR: playit tmux session is not running."
+              echo "Last playit output:"
+              tail -n 300 "$LOG_DIR/playit-live.log" || true
               exit 1
             fi
 
@@ -992,8 +1035,8 @@ jobs:
             echo "--- ports ---"
             lsof -i -P -n | grep -E '${{ inputs.local_port }}|3389|:${{ inputs.ssh_port }}' || true
 
-            echo "--- playit logs ---"
-            tail -n 80 "$LOG_DIR/playit-live.log" || true
+            echo "--- playit tmux output ---"
+            tmux capture-pane -t playit -p -S -200 | tee "$LOG_DIR/playit-live.log" || true
 
             if [ "${{ inputs.connection_type }}" != "none" ]; then
               echo "--- ngrok log ---"
@@ -1031,6 +1074,14 @@ jobs:
               echo "Server still running, killing tmux session."
               tmux kill-session -t terraria 2>/dev/null || true
             fi
+          fi
+
+          if tmux has-session -t playit 2>/dev/null; then
+            echo "Capturing and stopping playit tmux session..."
+            tmux capture-pane -t playit -p -S -1000 > "$LOG_DIR/playit-live.log" 2>/dev/null || true
+            tmux send-keys -t playit C-c
+            sleep 5
+            tmux kill-session -t playit 2>/dev/null || true
           fi
 
           if [ -f "$PLAYIT_DIR/playit.pid" ]; then
@@ -1119,6 +1170,7 @@ jobs:
             -f vanilla_version="${{ inputs.vanilla_version }}" \
             -f vanilla_download_url="${{ inputs.vanilla_download_url }}" \
             -f world_name="${{ inputs.world_name }}" \
+            -f world_seed="${{ inputs.world_seed }}" \
             -f world_size="${{ inputs.world_size }}" \
             -f difficulty="${{ inputs.difficulty }}" \
             -f max_players="${{ inputs.max_players }}" \
