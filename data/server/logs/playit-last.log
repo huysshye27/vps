@@ -1,2 +1,28 @@
-[2m2026-07-07T05:39:39.877029Z[0m [32m INFO[0m [2mplayitd::daemon[0m[2m:[0m Starting playitd [3msocket_path[0m[2m=[0mNone [3msecret_path[0m[2m=[0mSome("/home/runner/work/vps/vps/data/playit/config/playit_gg/playit.toml") [3mversion[0m[2m=[0m1.0.10
-[2m2026-07-07T05:39:39.877243Z[0m [32m INFO[0m [2mplayitd::daemon[0m[2m:[0m Waiting for frontend secret provisioning over IPC [3msecret_path[0m[2m=[0m/home/runner/work/vps/vps/data/playit/config/playit_gg/playit.toml
+========================================================
+====
+PLAYIT TMUX SESSION
+========================================================
+====
+HOME=/home/runner/work/vps/vps/data/playit/home
+XDG_CONFIG_HOME=/home/runner/work/vps/vps/data/playit/co
+nfig
+Attach from SSH with: tmux attach -t playit
+Detach with: Ctrl+B then D
+========================================================
+====
+PLAYIT_SECRET_KEY is not set. Starting first-run claim/s
+etup mode.
+2026-07-07T06:33:44.736726Z  INFO playitd::daemon: Start
+ing playitd socket_path=None secret_path=Some("/home/run
+ner/work/vps/vps/data/playit/config/playit_gg/playit.tom
+l") version=1.0.10
+2026-07-07T06:33:44.736991Z  INFO playitd::daemon: Waiti
+ng for frontend secret provisioning over IPC secret_path
+=/home/runner/work/vps/vps/data/playit/config/playit_gg/
+playit.toml
+
+
+
+
+
+

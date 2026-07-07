@@ -1,6 +1,6 @@
-world=data/server/worlds/friends.wld
+world=data/server/worlds/friends1.wld
 autocreate=3
-worldname=friends
+worldname=friends1
 difficulty=2
 maxplayers=8
 port=7777
@@ -8,3 +8,4 @@ password=
 motd=Temporary Terraria server on GitHub Actions
 secure=1
 language=en-US
+seed=for the worthy
