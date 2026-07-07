@@ -672,13 +672,11 @@ jobs:
           echo "Playit config dir saved at: $PLAYIT_DIR"
           echo
           echo "FIRST RUN INSTRUCTIONS:"
-          echo "1. Open the claim/setup link printed below if it appears."
-          echo "2. If no link appears in job log, SSH in and run: tmux attach -t playit"
-          echo "3. Claim this agent on playit.gg."
-          echo "4. Create a TCP tunnel:"
-          echo "   local address: 127.0.0.1"
-          echo "   local port: ${{ inputs.local_port }}"
-          echo "5. Use the public address from playit dashboard for Terraria."
+          echo "1. This workflow starts playitd daemon first."
+          echo "2. Then it starts playit CLI frontend in tmux to show claim/setup."
+          echo "3. If the link/code is not visible in job log, SSH in and run: tmux attach -t playit"
+          echo "4. Claim this agent on playit.gg."
+          echo "5. Create a TCP tunnel: 127.0.0.1:${{ inputs.local_port }}"
           echo "============================================================"
 
           mkdir -p "$PLAYIT_DIR"
@@ -688,56 +686,123 @@ jobs:
           mkdir -p "$LOG_DIR"
           rm -f "$PLAYIT_DIR/playit.pid"
           rm -f "$PLAYIT_DIR/start-playit.sh"
+          rm -f "$PLAYIT_DIR/playit.sock"
           : > "$LOG_DIR/playit-live.log"
 
           sudo mkdir -p /run/playit
           sudo chmod 777 /run/playit
 
-          echo "Downloading playit Linux binary..."
+          echo "Downloading playit daemon and CLI binaries..."
           API_URL="https://api.github.com/repos/playit-cloud/playit-agent/releases/latest"
 
           echo "Release assets:"
           curl -s "$API_URL" | jq -r '.assets[].name' || true
 
-          PLAYIT_URL="$(curl -s "$API_URL" | jq -r '.assets[] | select(.name == "playit-linux-amd64") | .browser_download_url' | head -n 1)"
+          PLAYIT_DAEMON_URL="$(curl -s "$API_URL" | jq -r '.assets[] | select(.name == "playit-linux-amd64") | .browser_download_url' | head -n 1)"
+          PLAYIT_CLI_URL="$(curl -s "$API_URL" | jq -r '.assets[] | select(.name == "playit-cli-linux-amd64") | .browser_download_url' | head -n 1)"
 
-          if [ -z "$PLAYIT_URL" ] || [ "$PLAYIT_URL" = "null" ]; then
+          if [ -z "$PLAYIT_DAEMON_URL" ] || [ "$PLAYIT_DAEMON_URL" = "null" ]; then
             echo "ERROR: Could not find playit-linux-amd64 from GitHub release."
             exit 1
           fi
 
-          echo "Download URL: $PLAYIT_URL"
-          curl -L "$PLAYIT_URL" -o playit-linux-amd64
+          if [ -z "$PLAYIT_CLI_URL" ] || [ "$PLAYIT_CLI_URL" = "null" ]; then
+            echo "ERROR: Could not find playit-cli-linux-amd64 from GitHub release."
+            exit 1
+          fi
+
+          echo "Daemon URL: $PLAYIT_DAEMON_URL"
+          curl -L "$PLAYIT_DAEMON_URL" -o playit-linux-amd64
           chmod +x playit-linux-amd64
+
+          echo "CLI URL: $PLAYIT_CLI_URL"
+          curl -L "$PLAYIT_CLI_URL" -o playit-cli-linux-amd64
+          chmod +x playit-cli-linux-amd64
 
           cat > "$PLAYIT_DIR/start-playit.sh" <<'EOF'
           #!/usr/bin/env bash
           set -e
           cd "$GITHUB_WORKSPACE"
 
+          SOCKET_PATH="$GITHUB_WORKSPACE/$PLAYIT_DIR/playit.sock"
+          SECRET_PATH="$GITHUB_WORKSPACE/$PLAYIT_DIR/config/playit_gg/playit.toml"
+
+          rm -f "$SOCKET_PATH"
+          mkdir -p "$(dirname "$SECRET_PATH")"
+
           echo "============================================================"
           echo "PLAYIT TMUX SESSION"
           echo "============================================================"
+          echo "Daemon: ./playit-linux-amd64"
+          echo "CLI: ./playit-cli-linux-amd64"
+          echo "Socket: $SOCKET_PATH"
+          echo "Secret: $SECRET_PATH"
           echo "HOME=$GITHUB_WORKSPACE/$PLAYIT_DIR/home"
           echo "XDG_CONFIG_HOME=$GITHUB_WORKSPACE/$PLAYIT_DIR/config"
           echo "Attach from SSH with: tmux attach -t playit"
           echo "Detach with: Ctrl+B then D"
           echo "============================================================"
 
+          cleanup() {
+            if [ -n "${DAEMON_PID:-}" ]; then
+              kill "$DAEMON_PID" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
           if [ -n "${PLAYIT_SECRET_KEY:-}" ]; then
-            echo "PLAYIT_SECRET_KEY is set. Starting with secret key."
-            exec env \
+            echo "PLAYIT_SECRET_KEY is set. Starting playit daemon with secret key."
+            env \
               HOME="$GITHUB_WORKSPACE/$PLAYIT_DIR/home" \
               XDG_CONFIG_HOME="$GITHUB_WORKSPACE/$PLAYIT_DIR/config" \
               SECRET_KEY="$PLAYIT_SECRET_KEY" \
-              ./playit-linux-amd64
+              ./playit-linux-amd64 \
+              --socket-path="$SOCKET_PATH" \
+              --secret-path="$SECRET_PATH" &
           else
-            echo "PLAYIT_SECRET_KEY is not set. Starting first-run claim/setup mode."
-            exec env \
+            echo "PLAYIT_SECRET_KEY is not set. Starting playit daemon for first-run setup."
+            env \
               HOME="$GITHUB_WORKSPACE/$PLAYIT_DIR/home" \
               XDG_CONFIG_HOME="$GITHUB_WORKSPACE/$PLAYIT_DIR/config" \
-              ./playit-linux-amd64
+              ./playit-linux-amd64 \
+              --socket-path="$SOCKET_PATH" \
+              --secret-path="$SECRET_PATH" &
           fi
+
+          DAEMON_PID=$!
+          echo "playit daemon pid: $DAEMON_PID"
+          echo "$DAEMON_PID" > "$GITHUB_WORKSPACE/$PLAYIT_DIR/playit-daemon.pid"
+
+          echo "Waiting for playit socket..."
+          for i in $(seq 1 30); do
+            if [ -S "$SOCKET_PATH" ]; then
+              echo "Socket is ready."
+              break
+            fi
+            if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+              echo "ERROR: playit daemon exited early."
+              exit 1
+            fi
+            sleep 1
+          done
+
+          if [ ! -S "$SOCKET_PATH" ]; then
+            echo "ERROR: playit socket was not created: $SOCKET_PATH"
+            exit 1
+          fi
+
+          echo "============================================================"
+          echo "STARTING PLAYIT CLI FRONTEND"
+          echo "============================================================"
+          echo "The claim/setup link or code should appear below."
+          echo "If the job log does not show it clearly, attach with: tmux attach -t playit"
+          echo "============================================================"
+
+          exec env \
+            HOME="$GITHUB_WORKSPACE/$PLAYIT_DIR/home" \
+            XDG_CONFIG_HOME="$GITHUB_WORKSPACE/$PLAYIT_DIR/config" \
+            TERM=xterm-256color \
+            ./playit-cli-linux-amd64 --socket-path="$SOCKET_PATH"
           EOF
 
           sed -i 's/^[[:space:]]*//' "$PLAYIT_DIR/start-playit.sh"
@@ -754,18 +819,18 @@ jobs:
           sleep 2
           PLAYIT_PANE_PID="$(tmux display-message -p -t playit '#{pane_pid}')"
           echo "$PLAYIT_PANE_PID" > "$PLAYIT_DIR/playit.pid"
-          echo "PLAYIT_MODE=tmux" >> "$GITHUB_ENV"
+          echo "PLAYIT_MODE=tmux-daemon-cli" >> "$GITHUB_ENV"
 
           echo "Waiting for playit to print setup info..."
-          sleep 10
+          sleep 12
 
           echo "============================================================"
           echo "PLAYIT INITIAL TMUX OUTPUT"
           echo "============================================================"
-          tmux capture-pane -t playit -p -S -500 | tee "$LOG_DIR/playit-live.log" || true
+          tmux capture-pane -t playit -p -S -1000 | tee "$LOG_DIR/playit-live.log" || true
 
           echo "============================================================"
-          echo "PLAYIT SETUP LINK DETECT"
+          echo "PLAYIT SETUP LINK OR CODE DETECT"
           echo "============================================================"
           CLAIM_LINK="$(grep -Eo 'https://[^ ]*(playit.gg|pit.gd)[^ ]*' "$LOG_DIR/playit-live.log" | head -n 1 || true)"
 
@@ -778,9 +843,9 @@ jobs:
             echo "============================================================"
             echo
           else
-            echo "No setup link detected in job log yet."
-            echo "This can happen when playit renders only in the tmux TTY."
+            echo "No URL detected in job log yet."
             echo "SSH in and run: tmux attach -t playit"
+            echo "Look for the claim link or claim code in the playit TUI."
           fi
 
           echo "Checking playit tmux session for up to 2 minutes, then continuing to Terraria."
@@ -793,12 +858,11 @@ jobs:
             if ! tmux has-session -t playit 2>/dev/null; then
               echo "ERROR: playit tmux session exited early."
               echo "Captured playit output:"
-              tmux capture-pane -t playit -p -S -500 2>/dev/null || true
               cat "$LOG_DIR/playit-live.log" || true
               exit 1
             fi
 
-            tmux capture-pane -t playit -p -S -500 | tee "$LOG_DIR/playit-live.log" || true
+            tmux capture-pane -t playit -p -S -1000 | tee "$LOG_DIR/playit-live.log" || true
             NEW_LINK="$(grep -Eo 'https://[^ ]*(playit.gg|pit.gd)[^ ]*' "$LOG_DIR/playit-live.log" | head -n 1 || true)"
             if [ -n "$NEW_LINK" ]; then
               echo
