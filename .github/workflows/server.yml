@@ -55,7 +55,7 @@ on:
         default: "7777"
 
       tshock_version:
-        description: "TShock version tag, use latest or tag like v5.2.4"
+        description: "TShock version tag, use latest or tag like v6.1.0"
         required: true
         default: "latest"
 
@@ -65,7 +65,7 @@ on:
         default: "330"
 
       auto_restart:
-        description: "Auto trigger next workflow run after saving"
+        description: "Auto trigger next workflow run after normal success only"
         required: true
         default: "false"
         type: choice
@@ -120,6 +120,7 @@ jobs:
           echo "tshock_version=${{ inputs.tshock_version }}"
           echo "run_minutes=${{ inputs.run_minutes }}"
           echo "auto_restart=${{ inputs.auto_restart }}"
+          echo "STOP_TERRARIA_RESTART=${{ vars.STOP_TERRARIA_RESTART }}"
           if [ -n "${{ inputs.server_password }}" ]; then
             echo "server_password=set"
           else
@@ -146,7 +147,7 @@ jobs:
             echo "$GITHUB_WORKSPACE/server.js"
             echo
             echo "Current files:"
-            find . -maxdepth 3 -type f | sort
+            find . -maxdepth 4 -type f | sort
             exit 1
           fi
 
@@ -177,7 +178,7 @@ jobs:
         run: |
           set -e
           sudo apt-get update
-          sudo apt-get install -y curl unzip jq findutils procps net-tools lsof
+          sudo apt-get install -y curl unzip jq tar findutils procps net-tools lsof file
 
       - name: Prepare folders
         run: |
@@ -190,10 +191,8 @@ jobs:
         run: |
           set -e
 
-          rm -rf "$SERVER_DIR"
-          mkdir -p "$SERVER_DIR"
-          rm -rf tshock_extract
-          mkdir -p tshock_extract
+          rm -rf "$SERVER_DIR" tshock_extract tshock.zip
+          mkdir -p "$SERVER_DIR" tshock_extract
 
           VERSION="${{ inputs.tshock_version }}"
 
@@ -209,38 +208,44 @@ jobs:
           echo "========== RELEASE ASSETS =========="
           curl -s "$API_URL" | jq -r '.assets[].name'
 
-          URL="$(curl -s "$API_URL" | jq -r '.assets[] | select(.name | test("linux-x64.*\\.zip$|linux-x64.*Release.*\\.zip$|linux-x64-Release\\.zip$")) | .browser_download_url' | head -n 1)"
+          URL="$(curl -s "$API_URL" | jq -r '.assets[] | select(.name | test("linux-x64.*Release\\.zip$")) | .browser_download_url' | head -n 1)"
 
           if [ -z "$URL" ] || [ "$URL" = "null" ]; then
-            echo "Could not auto-detect linux-x64 zip. Trying first zip asset..."
-            URL="$(curl -s "$API_URL" | jq -r '.assets[] | select(.name | test("\\.zip$")) | .browser_download_url' | head -n 1)"
-          fi
-
-          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
-            echo "ERROR: Could not find TShock zip asset."
+            echo "ERROR: Could not find linux-x64 Release zip."
             exit 1
           fi
 
           echo "========== DOWNLOAD =========="
           echo "$URL"
-
           curl -L "$URL" -o tshock.zip
 
           echo "========== ZIP INFO =========="
           ls -lh tshock.zip
           unzip -l tshock.zip | head -n 200
 
-          echo "========== EXTRACT =========="
+          echo "========== UNZIP =========="
           unzip -q tshock.zip -d tshock_extract
 
-          echo "========== EXTRACTED TREE =========="
-          find tshock_extract -maxdepth 5 -type f | sort | head -n 300
+          echo "========== AFTER UNZIP =========="
+          find tshock_extract -maxdepth 4 -type f | sort
+
+          TAR_FILE="$(find tshock_extract -type f -name '*.tar' | head -n 1)"
+
+          if [ -n "$TAR_FILE" ]; then
+            echo "========== TAR FOUND =========="
+            echo "$TAR_FILE"
+            mkdir -p tshock_extract/tar
+            tar -xf "$TAR_FILE" -C tshock_extract/tar
+          fi
+
+          echo "========== AFTER TAR EXTRACT =========="
+          find tshock_extract -maxdepth 7 -type f | sort | head -n 700
 
           TSHOCK_BIN="$(find tshock_extract -type f -name 'TShock.Server' | head -n 1)"
 
           if [ -z "$TSHOCK_BIN" ]; then
-            echo "ERROR: TShock.Server not found after extraction."
-            echo "All extracted files:"
+            echo "ERROR: TShock.Server not found."
+            echo "All files:"
             find tshock_extract -type f | sort
             exit 1
           fi
@@ -256,7 +261,7 @@ jobs:
           chmod +x "$SERVER_DIR/TShock.Server"
 
           echo "========== SERVER DIR =========="
-          find "$SERVER_DIR" -maxdepth 4 -type f | sort | head -n 300
+          find "$SERVER_DIR" -maxdepth 5 -type f | sort | head -n 700
           ls -lah "$SERVER_DIR"
           file "$SERVER_DIR/TShock.Server" || true
 
@@ -297,7 +302,7 @@ jobs:
           "$SERVER_DIR/TShock.Server" "${ARGS[@]}" > tshock.log 2>&1 &
           echo $! > tshock.pid
 
-          sleep 15
+          sleep 20
 
           echo "========== PROCESS =========="
           ps aux | grep -i TShock | grep -v grep || true
@@ -307,7 +312,7 @@ jobs:
           lsof -i -P -n || true
 
           echo "========== TSHOCK LOG =========="
-          tail -n 200 tshock.log || true
+          tail -n 250 tshock.log || true
 
           if ! kill -0 "$(cat tshock.pid)" 2>/dev/null; then
             echo "ERROR: TShock exited early."
@@ -326,18 +331,19 @@ jobs:
 
           RELAY_HOST="${{ inputs.relay_host }}" \
           RELAY_PORT="${{ inputs.relay_port }}" \
+          LOCAL_HOST="127.0.0.1" \
           LOCAL_PORT="${{ inputs.port }}" \
           node server.js client > tunnel.log 2>&1 &
 
           echo $! > tunnel.pid
 
-          sleep 8
+          sleep 10
 
           echo "========== TUNNEL PROCESS =========="
           ps aux | grep 'node server.js client' | grep -v grep || true
 
           echo "========== TUNNEL LOG =========="
-          tail -n 200 tunnel.log || true
+          tail -n 250 tunnel.log || true
 
           if ! kill -0 "$(cat tunnel.pid)" 2>/dev/null; then
             echo "ERROR: tunnel client exited early."
@@ -366,6 +372,7 @@ jobs:
         run: |
           RUN_SECONDS=$((${{ inputs.run_minutes }} * 60))
           echo "Running for ${{ inputs.run_minutes }} minutes..."
+          echo "To stop without restart: cancel this run. This workflow will NOT auto-restart on cancel/fail."
           sleep "$RUN_SECONDS"
 
       - name: Stop services
@@ -404,13 +411,13 @@ jobs:
           ps aux | grep -Ei 'TShock|node server.js' | grep -v grep || true
 
           echo "========== FINAL FILE TREE =========="
-          find data -maxdepth 5 -type f | sort || true
+          find data -maxdepth 6 -type f | sort || true
 
           echo "========== FINAL TSHOCK LOG =========="
-          tail -n 300 tshock.log || true
+          tail -n 350 tshock.log || true
 
           echo "========== FINAL TUNNEL LOG =========="
-          tail -n 300 tunnel.log || true
+          tail -n 350 tunnel.log || true
 
       - name: Save data
         if: always()
@@ -433,11 +440,14 @@ jobs:
           fi
 
       - name: Trigger next run
-        if: ${{ always() && inputs.auto_restart == 'true' }}
+        if: ${{ success() && inputs.auto_restart == 'true' && vars.STOP_TERRARIA_RESTART != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "========== AUTO RESTART =========="
+          echo "Triggering next clean run..."
+          echo "Set repository variable STOP_TERRARIA_RESTART=true to stop future restarts."
+
           gh workflow run "server.yml" \
             --ref "${{ github.ref_name }}" \
             -f relay_host="${{ inputs.relay_host }}" \
