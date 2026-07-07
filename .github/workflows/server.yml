@@ -1,17 +1,56 @@
-name: Terraria TShock Node Relay
+name: Terraria Server - Playit + Ngrok Admin
 
 on:
   workflow_dispatch:
     inputs:
-      relay_host:
-        description: "Node relay host"
+      runner_os:
+        description: "Runner OS"
         required: true
-        default: "kinetic.pikamc.vn"
+        default: "ubuntu-24.04"
+        type: choice
+        options:
+          - "ubuntu-20.04"
+          - "ubuntu-22.04"
+          - "ubuntu-24.04"
 
-      relay_port:
-        description: "Node relay port"
+      server_type:
+        description: "Server type"
         required: true
-        default: "26499"
+        default: "tshock"
+        type: choice
+        options:
+          - "vanilla"
+          - "tshock"
+          - "tmodloader"
+
+      force_reinstall:
+        description: "Reinstall server runtime"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+      tshock_version:
+        description: "TShock version: latest or tag like v6.1.0"
+        required: true
+        default: "latest"
+
+      tmodloader_version:
+        description: "tModLoader version: latest or tag like v2026.05.3.0"
+        required: true
+        default: "latest"
+
+      vanilla_version:
+        description: "Vanilla server version number for terraria-server-XXXX.zip, example: 1456"
+        required: true
+        default: "1456"
+
+      vanilla_download_url:
+        description: "Optional custom vanilla server zip URL. Leave empty to use terraria.org version URL"
+        required: false
+        default: ""
 
       world_name:
         description: "World name"
@@ -45,27 +84,69 @@ on:
         default: "8"
 
       server_password:
-        description: "Server password, empty = no password"
+        description: "Terraria server password, empty = no password"
         required: false
         default: ""
 
-      port:
-        description: "Local Terraria port inside GitHub runner"
+      local_port:
+        description: "Local Terraria port inside runner"
         required: true
         default: "7777"
 
-      tshock_version:
-        description: "TShock version tag, use latest or tag like v6.1.0"
+      connection_type:
+        description: "Admin connection by ngrok"
         required: true
-        default: "latest"
+        default: "ssh"
+        type: choice
+        options:
+          - "none"
+          - "ssh"
+          - "rdp"
+
+      ssh_user:
+        description: "SSH/RDP username"
+        required: true
+        default: "runner"
+
+      ssh_password:
+        description: "SSH/RDP password"
+        required: true
+        default: "Vps@Secure2026!"
+
+      enable_root_ssh:
+        description: "Enable root password SSH"
+        required: true
+        default: "no"
+        type: choice
+        options:
+          - "yes"
+          - "no"
+
+      ssh_port:
+        description: "SSH port"
+        required: true
+        default: "22"
+
+      timezone:
+        description: "Timezone"
+        required: true
+        default: "Asia/Ho_Chi_Minh"
 
       run_minutes:
-        description: "Run time minutes, max safe value 330"
+        description: "Runtime minutes, max safe 330"
         required: true
         default: "330"
+        type: choice
+        options:
+          - "60"
+          - "120"
+          - "180"
+          - "240"
+          - "300"
+          - "330"
 
       auto_restart:
-        description: "Auto trigger next workflow run after normal success only"
+        description: "Auto trigger next run after normal success only"
         required: true
         default: "false"
         type: choice
@@ -78,20 +159,25 @@ permissions:
   actions: write
 
 concurrency:
-  group: terraria-tshock-node-relay
+  group: terraria-server-playit-ngrok
   cancel-in-progress: false
 
 jobs:
   terraria:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner_os }}
     timeout-minutes: 355
 
     env:
-      SERVER_DIR: server
-      DATA_DIR: data
-      WORLD_DIR: data/worlds
-      CONFIG_DIR: data/config
-      LOG_DIR: data/logs
+      BASE_DIR: data
+      SERVER_DIR: data/server
+      RUNTIME_DIR: data/server/runtime
+      WORLD_DIR: data/server/worlds
+      LOG_DIR: data/server/logs
+      TSHOCK_CONFIG_DIR: data/server/tshock
+      PLAYIT_DIR: data/playit
+      CONFIG_FILE: data/server/serverconfig.txt
+      PLAYIT_SECRET_KEY: ${{ secrets.PLAYIT_SECRET_KEY || vars.PLAYIT_SECRET_KEY }}
+      NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN || secrets.NGROK_AUTH_TOKEN }}
 
     steps:
       - name: Checkout repository
@@ -99,7 +185,9 @@ jobs:
 
       - name: Print job info
         run: |
-          echo "========== JOB INFO =========="
+          echo "============================================================"
+          echo "JOB INFO"
+          echo "============================================================"
           echo "Repository: ${{ github.repository }}"
           echo "Branch/ref: ${{ github.ref }}"
           echo "Ref name: ${{ github.ref_name }}"
@@ -109,15 +197,26 @@ jobs:
           echo "Run number: ${{ github.run_number }}"
           echo "Workspace: $GITHUB_WORKSPACE"
           echo
-          echo "========== INPUTS =========="
-          echo "relay_host=${{ inputs.relay_host }}"
-          echo "relay_port=${{ inputs.relay_port }}"
+          echo "============================================================"
+          echo "INPUTS"
+          echo "============================================================"
+          echo "runner_os=${{ inputs.runner_os }}"
+          echo "server_type=${{ inputs.server_type }}"
+          echo "force_reinstall=${{ inputs.force_reinstall }}"
+          echo "tshock_version=${{ inputs.tshock_version }}"
+          echo "tmodloader_version=${{ inputs.tmodloader_version }}"
+          echo "vanilla_version=${{ inputs.vanilla_version }}"
+          echo "vanilla_download_url=${{ inputs.vanilla_download_url }}"
           echo "world_name=${{ inputs.world_name }}"
           echo "world_size=${{ inputs.world_size }}"
           echo "difficulty=${{ inputs.difficulty }}"
           echo "max_players=${{ inputs.max_players }}"
-          echo "port=${{ inputs.port }}"
-          echo "tshock_version=${{ inputs.tshock_version }}"
+          echo "local_port=${{ inputs.local_port }}"
+          echo "connection_type=${{ inputs.connection_type }}"
+          echo "ssh_user=${{ inputs.ssh_user }}"
+          echo "ssh_port=${{ inputs.ssh_port }}"
+          echo "enable_root_ssh=${{ inputs.enable_root_ssh }}"
+          echo "timezone=${{ inputs.timezone }}"
           echo "run_minutes=${{ inputs.run_minutes }}"
           echo "auto_restart=${{ inputs.auto_restart }}"
           echo "STOP_TERRARIA_RESTART=${{ vars.STOP_TERRARIA_RESTART }}"
@@ -126,14 +225,27 @@ jobs:
           else
             echo "server_password=empty"
           fi
+          if [ -n "$PLAYIT_SECRET_KEY" ]; then
+            echo "PLAYIT_SECRET_KEY=set"
+          else
+            echo "PLAYIT_SECRET_KEY=not set, first-run claim link mode"
+          fi
+          if [ -n "$NGROK_TOKEN" ]; then
+            echo "NGROK_TOKEN=set"
+          else
+            echo "NGROK_TOKEN=missing"
+          fi
           echo
-          echo "========== SYSTEM =========="
+          echo "============================================================"
+          echo "SYSTEM"
+          echo "============================================================"
           uname -a
           whoami
           id
           pwd
           node -v || true
           npm -v || true
+          docker --version || true
           df -h
           free -h
 
@@ -141,13 +253,9 @@ jobs:
         run: |
           set -e
 
-          if [ ! -f server.js ]; then
-            echo "ERROR: server.js not found in repository root."
-            echo "Put server.js here:"
-            echo "$GITHUB_WORKSPACE/server.js"
-            echo
-            echo "Current files:"
-            find . -maxdepth 4 -type f | sort
+          if [ "${{ inputs.connection_type }}" != "none" ] && [ -z "$NGROK_TOKEN" ]; then
+            echo "ERROR: Missing NGROK token."
+            echo "Set vars.NGROK_AUTH_TOKEN or secrets.NGROK_AUTH_TOKEN"
             exit 1
           fi
 
@@ -162,9 +270,9 @@ jobs:
             exit 1
           fi
 
-          PORT="${{ inputs.port }}"
-          if ! echo "$PORT" | grep -Eq '^[0-9]+$'; then
-            echo "ERROR: port must be number"
+          LOCAL_PORT="${{ inputs.local_port }}"
+          if ! echo "$LOCAL_PORT" | grep -Eq '^[0-9]+$'; then
+            echo "ERROR: local_port must be number"
             exit 1
           fi
 
@@ -174,25 +282,244 @@ jobs:
             exit 1
           fi
 
-      - name: Install system packages
+      - name: Install packages
         run: |
           set -e
+          sudo timedatectl set-timezone "${{ inputs.timezone }}" || true
           sudo apt-get update
-          sudo apt-get install -y curl unzip jq tar findutils procps net-tools lsof file
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            curl \
+            unzip \
+            jq \
+            tar \
+            findutils \
+            procps \
+            net-tools \
+            lsof \
+            file \
+            ca-certificates \
+            openssh-server \
+            tmux
 
       - name: Prepare folders
         run: |
           set -e
-          mkdir -p "$SERVER_DIR" "$WORLD_DIR" "$CONFIG_DIR" "$LOG_DIR"
-          echo "========== INITIAL FILE TREE =========="
-          find . -maxdepth 4 -type f | sort
+          mkdir -p "$BASE_DIR"
+          mkdir -p "$SERVER_DIR"
+          mkdir -p "$RUNTIME_DIR"
+          mkdir -p "$WORLD_DIR"
+          mkdir -p "$LOG_DIR"
+          mkdir -p "$TSHOCK_CONFIG_DIR"
+          mkdir -p "$PLAYIT_DIR"
 
-      - name: Download and extract TShock
+          echo "============================================================"
+          echo "INITIAL DATA TREE"
+          echo "============================================================"
+          find data -maxdepth 6 -type f | sort || true
+
+      - name: Setup admin SSH or RDP
+        if: ${{ inputs.connection_type != 'none' }}
+        env:
+          SSH_USER: ${{ inputs.ssh_user }}
+          SSH_PASS: ${{ inputs.ssh_password }}
+          ENABLE_ROOT: ${{ inputs.enable_root_ssh }}
+          SSH_PORT: ${{ inputs.ssh_port }}
+          CONNECTION_TYPE: ${{ inputs.connection_type }}
         run: |
           set -e
 
-          rm -rf "$SERVER_DIR" tshock_extract tshock.zip
-          mkdir -p "$SERVER_DIR" tshock_extract
+          echo "============================================================"
+          echo "ADMIN ACCESS SETUP"
+          echo "============================================================"
+
+          if [ "$ENABLE_ROOT" = "yes" ]; then
+            echo "root:$SSH_PASS" | sudo chpasswd
+            sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config || true
+          fi
+
+          if id "$SSH_USER" >/dev/null 2>&1; then
+            echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
+          else
+            sudo useradd -m -s /bin/bash "$SSH_USER"
+            echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
+            sudo usermod -aG sudo "$SSH_USER"
+          fi
+
+          echo "$SSH_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee "/etc/sudoers.d/$SSH_USER" >/dev/null
+
+          if [ "$CONNECTION_TYPE" = "rdp" ]; then
+            echo "Installing XFCE + XRDP..."
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4 xfce4-goodies xrdp
+            sudo systemctl enable xrdp || true
+            sudo adduser xrdp ssl-cert || true
+            echo xfce4-session | sudo tee "/home/$SSH_USER/.xsession" >/dev/null
+            sudo chown "$SSH_USER:$SSH_USER" "/home/$SSH_USER/.xsession"
+            sudo systemctl restart xrdp || true
+            echo "ADMIN_PORT=3389" >> "$GITHUB_ENV"
+            echo "ADMIN_PROTOCOL=RDP" >> "$GITHUB_ENV"
+          else
+            echo "Configuring SSH..."
+            sudo sed -i "s/^#Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config || true
+            sudo sed -i "s/^Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config || true
+            sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
+            sudo sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config || true
+            sudo systemctl restart ssh || sudo service ssh restart || true
+            echo "ADMIN_PORT=$SSH_PORT" >> "$GITHUB_ENV"
+            echo "ADMIN_PROTOCOL=SSH" >> "$GITHUB_ENV"
+          fi
+
+      - name: Start ngrok for admin
+        if: ${{ inputs.connection_type != 'none' }}
+        run: |
+          set -e
+
+          echo "============================================================"
+          echo "START NGROK ADMIN TUNNEL"
+          echo "============================================================"
+
+          curl -L https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz -o ngrok.tgz
+          tar -xzf ngrok.tgz
+          chmod +x ngrok
+
+          ./ngrok config add-authtoken "$NGROK_TOKEN"
+          nohup ./ngrok tcp "$ADMIN_PORT" --log=stdout > /tmp/ngrok.log 2>&1 &
+          echo $! > /tmp/ngrok.pid
+
+          sleep 8
+
+          NGROK_URL="$(curl -s http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[0].public_url' | sed 's#tcp://##')"
+
+          echo "============================================================"
+          echo "ADMIN READY"
+          echo "============================================================"
+          echo "Protocol: $ADMIN_PROTOCOL"
+          echo "User: ${{ inputs.ssh_user }}"
+          echo "Pass: ${{ inputs.ssh_password }}"
+          echo "Address: $NGROK_URL"
+          echo "============================================================"
+
+          echo "NGROK_URL=$NGROK_URL" >> "$GITHUB_ENV"
+          tail -n 100 /tmp/ngrok.log || true
+
+      - name: Create server config
+        run: |
+          set -e
+
+          WORLD_FILE="$WORLD_DIR/${{ inputs.world_name }}.wld"
+
+          cat > "$CONFIG_FILE" <<EOF
+          world=$WORLD_FILE
+          autocreate=${{ inputs.world_size }}
+          worldname=${{ inputs.world_name }}
+          difficulty=${{ inputs.difficulty }}
+          maxplayers=${{ inputs.max_players }}
+          port=${{ inputs.local_port }}
+          password=${{ inputs.server_password }}
+          motd=Temporary Terraria server on GitHub Actions
+          secure=1
+          language=en-US
+          EOF
+
+          sed -i 's/^[[:space:]]*//' "$CONFIG_FILE"
+
+          echo "============================================================"
+          echo "SERVER CONFIG"
+          echo "============================================================"
+          cat "$CONFIG_FILE"
+
+      - name: Decide install
+        id: decide
+        run: |
+          set -e
+
+          NEED_INSTALL="false"
+
+          if [ "${{ inputs.force_reinstall }}" = "true" ]; then
+            NEED_INSTALL="true"
+          fi
+
+          if [ ! -f "$SERVER_DIR/.server_type" ]; then
+            NEED_INSTALL="true"
+          fi
+
+          OLD_TYPE="$(cat "$SERVER_DIR/.server_type" 2>/dev/null || true)"
+          if [ "$OLD_TYPE" != "${{ inputs.server_type }}" ]; then
+            NEED_INSTALL="true"
+          fi
+
+          case "${{ inputs.server_type }}" in
+            tshock)
+              if [ ! -f "$RUNTIME_DIR/TShock.Server" ]; then NEED_INSTALL="true"; fi
+              ;;
+            vanilla)
+              if [ ! -f "$RUNTIME_DIR/TerrariaServer.bin.x86_64" ]; then NEED_INSTALL="true"; fi
+              ;;
+            tmodloader)
+              if [ ! -f "$RUNTIME_DIR/start-tModLoaderServer.sh" ]; then NEED_INSTALL="true"; fi
+              ;;
+          esac
+
+          echo "need_install=$NEED_INSTALL" >> "$GITHUB_OUTPUT"
+          echo "NEED_INSTALL=$NEED_INSTALL"
+
+      - name: Install vanilla server
+        if: ${{ steps.decide.outputs.need_install == 'true' && inputs.server_type == 'vanilla' }}
+        run: |
+          set -e
+
+          echo "============================================================"
+          echo "INSTALL VANILLA TERRARIA SERVER"
+          echo "============================================================"
+
+          rm -rf "$RUNTIME_DIR"
+          mkdir -p "$RUNTIME_DIR"
+
+          if [ -n "${{ inputs.vanilla_download_url }}" ]; then
+            URL="${{ inputs.vanilla_download_url }}"
+          else
+            URL="https://terraria.org/api/download/pc-dedicated-server/terraria-server-${{ inputs.vanilla_version }}.zip"
+          fi
+
+          echo "Download URL: $URL"
+          curl -L "$URL" -o vanilla.zip
+
+          echo "ZIP info:"
+          ls -lh vanilla.zip
+          unzip -l vanilla.zip | head -n 300
+
+          rm -rf vanilla_extract
+          mkdir -p vanilla_extract
+          unzip -q vanilla.zip -d vanilla_extract
+
+          BIN="$(find vanilla_extract -type f -path '*/Linux/TerrariaServer.bin.x86_64' | head -n 1)"
+
+          if [ -z "$BIN" ]; then
+            echo "ERROR: TerrariaServer.bin.x86_64 not found"
+            find vanilla_extract -type f | sort
+            exit 1
+          fi
+
+          ROOT="$(dirname "$BIN")"
+          cp -a "$ROOT"/. "$RUNTIME_DIR"/
+          chmod +x "$RUNTIME_DIR/TerrariaServer.bin.x86_64"
+
+          echo "vanilla" > "$SERVER_DIR/.server_type"
+          echo "${{ inputs.vanilla_version }}" > "$SERVER_DIR/.server_version"
+
+          echo "Runtime files:"
+          find "$RUNTIME_DIR" -maxdepth 5 -type f | sort | head -n 700
+
+      - name: Install TShock server
+        if: ${{ steps.decide.outputs.need_install == 'true' && inputs.server_type == 'tshock' }}
+        run: |
+          set -e
+
+          echo "============================================================"
+          echo "INSTALL TSHOCK SERVER"
+          echo "============================================================"
+
+          rm -rf "$RUNTIME_DIR" tshock_extract tshock.zip
+          mkdir -p "$RUNTIME_DIR" tshock_extract
 
           VERSION="${{ inputs.tshock_version }}"
 
@@ -202,239 +529,471 @@ jobs:
             API_URL="https://api.github.com/repos/Pryaxis/TShock/releases/tags/$VERSION"
           fi
 
-          echo "========== TSHOCK API =========="
-          echo "$API_URL"
-
-          echo "========== RELEASE ASSETS =========="
+          echo "API URL: $API_URL"
+          echo "Release assets:"
           curl -s "$API_URL" | jq -r '.assets[].name'
 
           URL="$(curl -s "$API_URL" | jq -r '.assets[] | select(.name | test("linux-x64.*Release\\.zip$")) | .browser_download_url' | head -n 1)"
 
           if [ -z "$URL" ] || [ "$URL" = "null" ]; then
-            echo "ERROR: Could not find linux-x64 Release zip."
+            echo "ERROR: Could not find TShock linux-x64 Release zip"
             exit 1
           fi
 
-          echo "========== DOWNLOAD =========="
-          echo "$URL"
+          echo "Download URL: $URL"
           curl -L "$URL" -o tshock.zip
 
-          echo "========== ZIP INFO =========="
+          echo "ZIP info:"
           ls -lh tshock.zip
-          unzip -l tshock.zip | head -n 200
+          unzip -l tshock.zip | head -n 300
 
-          echo "========== UNZIP =========="
           unzip -q tshock.zip -d tshock_extract
 
-          echo "========== AFTER UNZIP =========="
-          find tshock_extract -maxdepth 4 -type f | sort
-
           TAR_FILE="$(find tshock_extract -type f -name '*.tar' | head -n 1)"
-
           if [ -n "$TAR_FILE" ]; then
-            echo "========== TAR FOUND =========="
-            echo "$TAR_FILE"
+            echo "Found inner tar: $TAR_FILE"
             mkdir -p tshock_extract/tar
             tar -xf "$TAR_FILE" -C tshock_extract/tar
           fi
 
-          echo "========== AFTER TAR EXTRACT =========="
-          find tshock_extract -maxdepth 7 -type f | sort | head -n 700
-
           TSHOCK_BIN="$(find tshock_extract -type f -name 'TShock.Server' | head -n 1)"
 
           if [ -z "$TSHOCK_BIN" ]; then
-            echo "ERROR: TShock.Server not found."
-            echo "All files:"
+            echo "ERROR: TShock.Server not found"
             find tshock_extract -type f | sort
             exit 1
           fi
 
-          echo "Found TShock binary:"
-          echo "$TSHOCK_BIN"
+          ROOT="$(dirname "$TSHOCK_BIN")"
+          cp -a "$ROOT"/. "$RUNTIME_DIR"/
+          chmod +x "$RUNTIME_DIR/TShock.Server"
 
-          TSHOCK_ROOT="$(dirname "$TSHOCK_BIN")"
-          echo "TShock root:"
-          echo "$TSHOCK_ROOT"
+          echo "tshock" > "$SERVER_DIR/.server_type"
+          echo "$VERSION" > "$SERVER_DIR/.server_version"
 
-          cp -a "$TSHOCK_ROOT"/. "$SERVER_DIR"/
-          chmod +x "$SERVER_DIR/TShock.Server"
+          echo "Runtime files:"
+          find "$RUNTIME_DIR" -maxdepth 6 -type f | sort | head -n 900
+          file "$RUNTIME_DIR/TShock.Server" || true
 
-          echo "========== SERVER DIR =========="
-          find "$SERVER_DIR" -maxdepth 5 -type f | sort | head -n 700
-          ls -lah "$SERVER_DIR"
-          file "$SERVER_DIR/TShock.Server" || true
+      - name: Install tModLoader server
+        if: ${{ steps.decide.outputs.need_install == 'true' && inputs.server_type == 'tmodloader' }}
+        run: |
+          set -e
 
-      - name: Start TShock
+          echo "============================================================"
+          echo "INSTALL TMODLOADER SERVER"
+          echo "============================================================"
+
+          rm -rf "$RUNTIME_DIR" tml_extract tmodloader.zip
+          mkdir -p "$RUNTIME_DIR" tml_extract
+
+          VERSION="${{ inputs.tmodloader_version }}"
+
+          if [ "$VERSION" = "latest" ]; then
+            API_URL="https://api.github.com/repos/tModLoader/tModLoader/releases/latest"
+          else
+            API_URL="https://api.github.com/repos/tModLoader/tModLoader/releases/tags/$VERSION"
+          fi
+
+          echo "API URL: $API_URL"
+          echo "Release assets:"
+          curl -s "$API_URL" | jq -r '.assets[].name'
+
+          URL="$(curl -s "$API_URL" | jq -r '.assets[] | select(.name == "tModLoader.zip" or (.name | test("tModLoader.*Linux.*\\.zip$"))) | .browser_download_url' | head -n 1)"
+
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "Trying first non-sha zip asset..."
+            URL="$(curl -s "$API_URL" | jq -r '.assets[] | select((.name | test("\\.zip$")) and ((.name | test("sha|sha256|Symbols|symbols")) | not)) | .browser_download_url' | head -n 1)"
+          fi
+
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "ERROR: Could not find tModLoader server zip"
+            exit 1
+          fi
+
+          echo "Download URL: $URL"
+          curl -L "$URL" -o tmodloader.zip
+
+          echo "ZIP info:"
+          ls -lh tmodloader.zip
+          unzip -l tmodloader.zip | head -n 300
+
+          unzip -q tmodloader.zip -d "$RUNTIME_DIR"
+
+          chmod +x "$RUNTIME_DIR/start-tModLoaderServer.sh" || true
+          chmod +x "$RUNTIME_DIR/tModLoader" || true
+          chmod +x "$RUNTIME_DIR/dotnet" || true
+
+          if [ ! -f "$RUNTIME_DIR/start-tModLoaderServer.sh" ]; then
+            echo "ERROR: start-tModLoaderServer.sh not found"
+            find "$RUNTIME_DIR" -maxdepth 6 -type f | sort
+            exit 1
+          fi
+
+          echo "tmodloader" > "$SERVER_DIR/.server_type"
+          echo "$VERSION" > "$SERVER_DIR/.server_version"
+
+          echo "Runtime files:"
+          find "$RUNTIME_DIR" -maxdepth 6 -type f | sort | head -n 900
+
+      - name: Print server directory
+        run: |
+          echo "============================================================"
+          echo "SERVER DIRECTORY"
+          echo "============================================================"
+          echo "SERVER_DIR=$SERVER_DIR"
+          echo "RUNTIME_DIR=$RUNTIME_DIR"
+          echo "WORLD_DIR=$WORLD_DIR"
+          echo "LOG_DIR=$LOG_DIR"
+          echo "PLAYIT_DIR=$PLAYIT_DIR"
+          echo
+          find "$SERVER_DIR" -maxdepth 7 -type f | sort | head -n 1500
+
+      - name: Start playit for Terraria
+        run: |
+          set -e
+
+          echo "============================================================"
+          echo "START PLAYIT"
+          echo "============================================================"
+          echo "Local Terraria port: ${{ inputs.local_port }}"
+          echo "Playit config dir saved at: $PLAYIT_DIR"
+          echo
+          echo "FIRST RUN INSTRUCTIONS:"
+          echo "1. Wait for setup/claim link below."
+          echo "2. Open the link."
+          echo "3. Claim this agent on playit.gg."
+          echo "4. Create a TCP tunnel:"
+          echo "   local address: 127.0.0.1"
+          echo "   local port: ${{ inputs.local_port }}"
+          echo "5. Use the public address from playit dashboard for Terraria."
+          echo "============================================================"
+
+          mkdir -p "$PLAYIT_DIR"
+          docker rm -f playit 2>/dev/null || true
+
+          if [ -n "$PLAYIT_SECRET_KEY" ]; then
+            echo "Starting playit with PLAYIT_SECRET_KEY..."
+            docker run -d \
+              --name playit \
+              --network host \
+              -e SECRET_KEY="$PLAYIT_SECRET_KEY" \
+              -v "$PWD/$PLAYIT_DIR:/root/.config/playit" \
+              ghcr.io/playit-cloud/playit-agent:latest
+          else
+            echo "Starting playit without secret key."
+            echo "If this config folder is new, playit should print a setup/claim link."
+            docker run -d \
+              --name playit \
+              --network host \
+              -v "$PWD/$PLAYIT_DIR:/root/.config/playit" \
+              ghcr.io/playit-cloud/playit-agent:latest
+          fi
+
+          sleep 8
+
+          echo "============================================================"
+          echo "PLAYIT CONTAINER"
+          echo "============================================================"
+          docker ps --filter name=playit || true
+
+          echo "============================================================"
+          echo "PLAYIT INITIAL LOG"
+          echo "============================================================"
+          docker logs --tail 300 playit || true
+
+          echo "============================================================"
+          echo "PLAYIT SETUP LINK DETECT"
+          echo "============================================================"
+
+          CLAIM_LINK="$(docker logs playit 2>&1 | grep -Eo 'https://[^ ]*(playit.gg|pit.gd)[^ ]*' | head -n 1 || true)"
+
+          if [ -n "$CLAIM_LINK" ]; then
+            echo
+            echo "============================================================"
+            echo "OPEN THIS LINK TO SETUP PLAYIT"
+            echo "============================================================"
+            echo "$CLAIM_LINK"
+            echo "============================================================"
+            echo
+          else
+            echo "No setup link detected yet."
+            echo "This is OK if data/playit already has saved config."
+          fi
+
+          echo "Waiting up to 5 minutes for playit setup/config..."
+          echo "You can open the setup link while this job is waiting."
+
+          for i in $(seq 1 20); do
+            echo
+            echo "============================================================"
+            echo "PLAYIT CHECK $i/20"
+            echo "============================================================"
+            docker logs --tail 160 playit || true
+
+            NEW_LINK="$(docker logs playit 2>&1 | grep -Eo 'https://[^ ]*(playit.gg|pit.gd)[^ ]*' | head -n 1 || true)"
+            if [ -n "$NEW_LINK" ]; then
+              echo
+              echo "PLAYIT SETUP LINK:"
+              echo "$NEW_LINK"
+              echo
+            fi
+
+            sleep 15
+          done
+
+          echo "============================================================"
+          echo "PLAYIT CONFIG FILES"
+          echo "============================================================"
+          find "$PLAYIT_DIR" -maxdepth 6 -type f -print -exec ls -lh {} \; || true
+
+          echo "============================================================"
+          echo "PLAYIT READY INFO"
+          echo "============================================================"
+          echo "Terraria local target:"
+          echo "  127.0.0.1:${{ inputs.local_port }}"
+          echo
+          echo "Public Terraria address:"
+          echo "  Check playit.gg dashboard after setup."
+          echo
+          echo "Saved playit config:"
+          echo "  $PLAYIT_DIR"
+          echo "============================================================"
+
+      - name: Start Terraria server
         run: |
           set -e
 
           WORLD_FILE="$WORLD_DIR/${{ inputs.world_name }}.wld"
           PASSWORD="${{ inputs.server_password }}"
+          SERVER_TYPE="${{ inputs.server_type }}"
 
-          echo "========== START TSHOCK =========="
+          echo "============================================================"
+          echo "START TERRARIA SERVER"
+          echo "============================================================"
+          echo "Server type: $SERVER_TYPE"
           echo "World file: $WORLD_FILE"
-          echo "Local port: ${{ inputs.port }}"
+          echo "Local port: ${{ inputs.local_port }}"
           echo "Max players: ${{ inputs.max_players }}"
           echo "World size: ${{ inputs.world_size }}"
           echo "Difficulty: ${{ inputs.difficulty }}"
-          echo "Config dir: $CONFIG_DIR"
-          echo "Log dir: $LOG_DIR"
+          echo "Runtime dir: $RUNTIME_DIR"
 
-          ARGS=(
-            -world "$WORLD_FILE"
-            -autocreate "${{ inputs.world_size }}"
-            -difficulty "${{ inputs.difficulty }}"
-            -port "${{ inputs.port }}"
-            -maxplayers "${{ inputs.max_players }}"
-            -configpath "$CONFIG_DIR"
-            -logpath "$LOG_DIR"
-          )
+          if [ "$SERVER_TYPE" = "tshock" ]; then
+            ARGS=(
+              -world "$WORLD_FILE"
+              -autocreate "${{ inputs.world_size }}"
+              -difficulty "${{ inputs.difficulty }}"
+              -port "${{ inputs.local_port }}"
+              -maxplayers "${{ inputs.max_players }}"
+              -configpath "$TSHOCK_CONFIG_DIR"
+              -logpath "$LOG_DIR"
+            )
 
-          if [ -n "$PASSWORD" ]; then
-            ARGS+=(-pass "$PASSWORD")
+            if [ -n "$PASSWORD" ]; then
+              ARGS+=(-pass "$PASSWORD")
+            fi
+
+            echo "Command:"
+            printf '%q ' "$RUNTIME_DIR/TShock.Server" "${ARGS[@]}"
+            echo
+
+            "$RUNTIME_DIR/TShock.Server" "${ARGS[@]}" > "$LOG_DIR/server-live.log" 2>&1 &
+            echo $! > "$SERVER_DIR/server.pid"
+
+          elif [ "$SERVER_TYPE" = "vanilla" ]; then
+            echo "Command:"
+            printf '%q ' "$RUNTIME_DIR/TerrariaServer.bin.x86_64" -config "$CONFIG_FILE"
+            echo
+
+            "$RUNTIME_DIR/TerrariaServer.bin.x86_64" -config "$CONFIG_FILE" > "$LOG_DIR/server-live.log" 2>&1 &
+            echo $! > "$SERVER_DIR/server.pid"
+
+          elif [ "$SERVER_TYPE" = "tmodloader" ]; then
+            cd "$RUNTIME_DIR"
+
+            echo "Command:"
+            printf '%q ' ./start-tModLoaderServer.sh -config "$GITHUB_WORKSPACE/$CONFIG_FILE" -tmlsavedirectory "$GITHUB_WORKSPACE/$SERVER_DIR"
+            echo
+
+            ./start-tModLoaderServer.sh \
+              -config "$GITHUB_WORKSPACE/$CONFIG_FILE" \
+              -tmlsavedirectory "$GITHUB_WORKSPACE/$SERVER_DIR" \
+              > "$GITHUB_WORKSPACE/$LOG_DIR/server-live.log" 2>&1 &
+
+            echo $! > "$GITHUB_WORKSPACE/$SERVER_DIR/server.pid"
+            cd "$GITHUB_WORKSPACE"
           fi
 
-          echo "Command:"
-          printf '%q ' "$SERVER_DIR/TShock.Server" "${ARGS[@]}"
-          echo
+          sleep 25
 
-          "$SERVER_DIR/TShock.Server" "${ARGS[@]}" > tshock.log 2>&1 &
-          echo $! > tshock.pid
+          echo "============================================================"
+          echo "PROCESS"
+          echo "============================================================"
+          ps aux | grep -Ei 'Terraria|TShock|tModLoader|dotnet' | grep -v grep || true
 
-          sleep 20
-
-          echo "========== PROCESS =========="
-          ps aux | grep -i TShock | grep -v grep || true
-
-          echo "========== PORTS =========="
+          echo "============================================================"
+          echo "PORTS"
+          echo "============================================================"
           netstat -tulpn || true
-          lsof -i -P -n || true
+          lsof -i -P -n | grep "${{ inputs.local_port }}" || true
 
-          echo "========== TSHOCK LOG =========="
-          tail -n 250 tshock.log || true
+          echo "============================================================"
+          echo "SERVER LOG"
+          echo "============================================================"
+          tail -n 300 "$LOG_DIR/server-live.log" || true
 
-          if ! kill -0 "$(cat tshock.pid)" 2>/dev/null; then
-            echo "ERROR: TShock exited early."
-            exit 1
-          fi
-
-      - name: Start Node tunnel client
-        run: |
-          set -e
-
-          echo "========== START TUNNEL =========="
-          echo "Relay host: ${{ inputs.relay_host }}"
-          echo "Relay port: ${{ inputs.relay_port }}"
-          echo "Local host: 127.0.0.1"
-          echo "Local port: ${{ inputs.port }}"
-
-          RELAY_HOST="${{ inputs.relay_host }}" \
-          RELAY_PORT="${{ inputs.relay_port }}" \
-          LOCAL_HOST="127.0.0.1" \
-          LOCAL_PORT="${{ inputs.port }}" \
-          node server.js client > tunnel.log 2>&1 &
-
-          echo $! > tunnel.pid
-
-          sleep 10
-
-          echo "========== TUNNEL PROCESS =========="
-          ps aux | grep 'node server.js client' | grep -v grep || true
-
-          echo "========== TUNNEL LOG =========="
-          tail -n 250 tunnel.log || true
-
-          if ! kill -0 "$(cat tunnel.pid)" 2>/dev/null; then
-            echo "ERROR: tunnel client exited early."
+          if ! kill -0 "$(cat "$SERVER_DIR/server.pid")" 2>/dev/null; then
+            echo "ERROR: Terraria server exited early"
             exit 1
           fi
 
       - name: Print connection info
         run: |
-          echo "=========================================="
+          echo "============================================================"
           echo "SERVER READY"
-          echo "=========================================="
-          echo "Terraria host: ${{ inputs.relay_host }}"
-          echo "Terraria port: ${{ inputs.relay_port }}"
+          echo "============================================================"
+          echo "Terraria:"
+          echo "  Provider: playit.gg"
+          echo "  Local target: 127.0.0.1:${{ inputs.local_port }}"
+          echo "  Public address: check playit.gg dashboard"
+          echo "  First run: open the setup/claim link printed in the Start playit step"
           echo
-          echo "Local GitHub runner server:"
-          echo "127.0.0.1:${{ inputs.port }}"
+          echo "Admin:"
+          echo "  Type: ${{ inputs.connection_type }}"
+          if [ "${{ inputs.connection_type }}" != "none" ]; then
+            echo "  Protocol: $ADMIN_PROTOCOL"
+            echo "  User: ${{ inputs.ssh_user }}"
+            echo "  Pass: ${{ inputs.ssh_password }}"
+            echo "  Ngrok: $NGROK_URL"
+          fi
           echo
-          echo "World:"
-          echo "$WORLD_DIR/${{ inputs.world_name }}.wld"
-          echo
-          echo "Run minutes:"
-          echo "${{ inputs.run_minutes }}"
-          echo "=========================================="
+          echo "Server:"
+          echo "  Type: ${{ inputs.server_type }}"
+          echo "  World: $WORLD_DIR/${{ inputs.world_name }}.wld"
+          echo "  Saved full server folder: $SERVER_DIR"
+          echo "  Saved playit folder: $PLAYIT_DIR"
+          echo "  Runtime minutes: ${{ inputs.run_minutes }}"
+          echo "============================================================"
 
-      - name: Run server
+      - name: Run server with live logs
         run: |
           RUN_SECONDS=$((${{ inputs.run_minutes }} * 60))
+          END_TIME=$(($(date +%s) + RUN_SECONDS))
+
           echo "Running for ${{ inputs.run_minutes }} minutes..."
-          echo "To stop without restart: cancel this run. This workflow will NOT auto-restart on cancel/fail."
-          sleep "$RUN_SECONDS"
+          echo "Cancel this run to stop. It will not auto-restart on cancel/failure."
+
+          while [ "$(date +%s)" -lt "$END_TIME" ]; do
+            echo
+            echo "============================================================"
+            echo "LIVE STATUS $(date)"
+            echo "============================================================"
+
+            echo "--- processes ---"
+            ps aux | grep -Ei 'Terraria|TShock|tModLoader|dotnet|playit|ngrok|xrdp|sshd' | grep -v grep || true
+
+            echo "--- ports ---"
+            lsof -i -P -n | grep -E '${{ inputs.local_port }}|3389|:${{ inputs.ssh_port }}' || true
+
+            echo "--- playit logs ---"
+            docker logs --tail 120 playit || true
+
+            if [ "${{ inputs.connection_type }}" != "none" ]; then
+              echo "--- ngrok log ---"
+              tail -n 80 /tmp/ngrok.log || true
+            fi
+
+            echo "--- server log ---"
+            tail -n 180 "$LOG_DIR/server-live.log" || true
+
+            sleep 60
+          done
 
       - name: Stop services
         if: always()
         run: |
           set +e
 
-          echo "========== STOP TUNNEL =========="
-          if [ -f tunnel.pid ]; then
-            TUNNEL_PID="$(cat tunnel.pid)"
-            echo "Tunnel PID: $TUNNEL_PID"
-            kill "$TUNNEL_PID" 2>/dev/null || true
-          fi
+          echo "============================================================"
+          echo "STOP SERVICES"
+          echo "============================================================"
 
-          echo "========== STOP TSHOCK =========="
-          if [ -f tshock.pid ]; then
-            TSHOCK_PID="$(cat tshock.pid)"
-            echo "TShock PID: $TSHOCK_PID"
+          if [ -f "$SERVER_DIR/server.pid" ]; then
+            SERVER_PID="$(cat "$SERVER_DIR/server.pid")"
+            echo "Server PID: $SERVER_PID"
 
-            kill -INT "$TSHOCK_PID" 2>/dev/null || true
-            sleep 30
+            kill -INT "$SERVER_PID" 2>/dev/null || true
+            sleep 35
 
-            if kill -0 "$TSHOCK_PID" 2>/dev/null; then
-              echo "TShock still running, sending TERM"
-              kill -TERM "$TSHOCK_PID" 2>/dev/null || true
+            if kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "Server still running, sending TERM"
+              kill -TERM "$SERVER_PID" 2>/dev/null || true
               sleep 10
             fi
 
-            if kill -0 "$TSHOCK_PID" 2>/dev/null; then
-              echo "TShock still running, sending KILL"
-              kill -KILL "$TSHOCK_PID" 2>/dev/null || true
+            if kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "Server still running, sending KILL"
+              kill -KILL "$SERVER_PID" 2>/dev/null || true
             fi
           fi
 
-          echo "========== FINAL PROCESS LIST =========="
-          ps aux | grep -Ei 'TShock|node server.js' | grep -v grep || true
+          docker logs --tail 500 playit > "$LOG_DIR/playit-last.log" 2>&1 || true
+          docker rm -f playit 2>/dev/null || true
 
-          echo "========== FINAL FILE TREE =========="
-          find data -maxdepth 6 -type f | sort || true
+          if [ -f /tmp/ngrok.pid ]; then
+            kill "$(cat /tmp/ngrok.pid)" 2>/dev/null || true
+          fi
 
-          echo "========== FINAL TSHOCK LOG =========="
-          tail -n 350 tshock.log || true
+          echo "============================================================"
+          echo "FINAL PROCESS LIST"
+          echo "============================================================"
+          ps aux | grep -Ei 'Terraria|TShock|tModLoader|dotnet|playit|ngrok' | grep -v grep || true
 
-          echo "========== FINAL TUNNEL LOG =========="
-          tail -n 350 tunnel.log || true
+          echo "============================================================"
+          echo "FINAL SERVER TREE"
+          echo "============================================================"
+          find "$SERVER_DIR" -maxdepth 8 -type f | sort | head -n 2000 || true
 
-      - name: Save data
+          echo "============================================================"
+          echo "FINAL PLAYIT TREE"
+          echo "============================================================"
+          find "$PLAYIT_DIR" -maxdepth 8 -type f | sort || true
+
+          echo "============================================================"
+          echo "FINAL SERVER LOG"
+          echo "============================================================"
+          tail -n 600 "$LOG_DIR/server-live.log" || true
+
+          echo "============================================================"
+          echo "FINAL PLAYIT LOG"
+          echo "============================================================"
+          tail -n 500 "$LOG_DIR/playit-last.log" || true
+
+      - name: Save full server data
         if: always()
         run: |
           set +e
 
-          echo "========== SAVE DATA =========="
+          echo "============================================================"
+          echo "SAVE DATA"
+          echo "============================================================"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          echo "Git status before add:"
           git status --short
+
           git add data
+
+          echo "Git status after add:"
+          git status --short
 
           if git diff --cached --quiet; then
             echo "No data changes to commit."
           else
-            git commit -m "Save Terraria data"
+            git commit -m "Save Terraria server data"
             git pull --rebase || true
             git push
           fi
@@ -444,20 +1003,32 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "========== AUTO RESTART =========="
+          echo "============================================================"
+          echo "AUTO RESTART"
+          echo "============================================================"
           echo "Triggering next clean run..."
-          echo "Set repository variable STOP_TERRARIA_RESTART=true to stop future restarts."
+          echo "To stop future restarts, set repository variable STOP_TERRARIA_RESTART=true"
 
-          gh workflow run "server.yml" \
+          gh workflow run "terraria-server.yml" \
             --ref "${{ github.ref_name }}" \
-            -f relay_host="${{ inputs.relay_host }}" \
-            -f relay_port="${{ inputs.relay_port }}" \
+            -f runner_os="${{ inputs.runner_os }}" \
+            -f server_type="${{ inputs.server_type }}" \
+            -f force_reinstall="${{ inputs.force_reinstall }}" \
+            -f tshock_version="${{ inputs.tshock_version }}" \
+            -f tmodloader_version="${{ inputs.tmodloader_version }}" \
+            -f vanilla_version="${{ inputs.vanilla_version }}" \
+            -f vanilla_download_url="${{ inputs.vanilla_download_url }}" \
             -f world_name="${{ inputs.world_name }}" \
             -f world_size="${{ inputs.world_size }}" \
             -f difficulty="${{ inputs.difficulty }}" \
             -f max_players="${{ inputs.max_players }}" \
             -f server_password="${{ inputs.server_password }}" \
-            -f port="${{ inputs.port }}" \
-            -f tshock_version="${{ inputs.tshock_version }}" \
+            -f local_port="${{ inputs.local_port }}" \
+            -f connection_type="${{ inputs.connection_type }}" \
+            -f ssh_user="${{ inputs.ssh_user }}" \
+            -f ssh_password="${{ inputs.ssh_password }}" \
+            -f enable_root_ssh="${{ inputs.enable_root_ssh }}" \
+            -f ssh_port="${{ inputs.ssh_port }}" \
+            -f timezone="${{ inputs.timezone }}" \
             -f run_minutes="${{ inputs.run_minutes }}" \
             -f auto_restart="${{ inputs.auto_restart }}"
