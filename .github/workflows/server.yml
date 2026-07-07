@@ -11,7 +11,7 @@ on:
         options:
           - "ubuntu-20.04"
           - "ubuntu-22.04"
-          - "ubuntu-24.04"
+	        - "ubuntu-24.04"
 
       server_type:
         description: "Server type"
@@ -676,6 +676,12 @@ jobs:
           mkdir -p "$LOG_DIR"
           rm -f "$PLAYIT_DIR/playit.pid"
 
+          # playit v1.x binds its daemon socket at /run/playit/playitd.sock by default.
+          # GitHub runners do not always have this folder, so create it before starting playit.
+          sudo mkdir -p /run/playit
+          sudo chmod 777 /run/playit
+          mkdir -p "$PLAYIT_DIR/config/playit_gg"
+
           echo "Downloading playit Linux binary..."
 
           API_URL="https://api.github.com/repos/playit-cloud/playit-agent/releases/latest"
@@ -691,8 +697,8 @@ jobs:
           fi
 
           echo "Download URL: $PLAYIT_URL"
-          curl -L "$PLAYIT_URL" -o playit-agent
-          chmod +x playit-agent
+          curl -L "$PLAYIT_URL" -o playit-linux-amd64
+          chmod +x playit-linux-amd64
 
           echo "Starting playit binary..."
           echo "HOME=$PWD/$PLAYIT_DIR/home"
@@ -704,7 +710,7 @@ jobs:
               HOME="$PWD/$PLAYIT_DIR/home" \
               XDG_CONFIG_HOME="$PWD/$PLAYIT_DIR/config" \
               SECRET_KEY="$PLAYIT_SECRET_KEY" \
-              ./playit-agent \
+              ./playit-linux-amd64 \
               > "$LOG_DIR/playit-live.log" 2>&1 &
           else
             echo "PLAYIT_SECRET_KEY is not set."
@@ -712,7 +718,7 @@ jobs:
             nohup env \
               HOME="$PWD/$PLAYIT_DIR/home" \
               XDG_CONFIG_HOME="$PWD/$PLAYIT_DIR/config" \
-              ./playit-agent \
+              ./playit-linux-amd64 \
               > "$LOG_DIR/playit-live.log" 2>&1 &
           fi
 
