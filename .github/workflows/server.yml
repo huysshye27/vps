@@ -828,43 +828,49 @@ jobs:
 
           if [ "$SERVER_TYPE" = "tshock" ]; then
             cat > "$SERVER_DIR/start-terraria.sh" <<EOF
-#!/usr/bin/env bash
-cd "$GITHUB_WORKSPACE"
-exec "$RUNTIME_DIR/TShock.Server" \\
-  -world "$WORLD_FILE" \\
-  -autocreate "${{ inputs.world_size }}" \\
-  -difficulty "${{ inputs.difficulty }}" \\
-  -port "${{ inputs.local_port }}" \\
-  -maxplayers "${{ inputs.max_players }}" \\
-  -configpath "$TSHOCK_CONFIG_DIR" \\
-  -logpath "$LOG_DIR"
-EOF
-
-            if [ -n "$PASSWORD" ]; then
-              sed -i '$ s#$# \\\n  -pass "'"$PASSWORD"'"#' "$SERVER_DIR/start-terraria.sh"
-            fi
+          #!/usr/bin/env bash
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          CMD=(
+            "$RUNTIME_DIR/TShock.Server"
+            -world "$WORLD_FILE"
+            -autocreate "${{ inputs.world_size }}"
+            -difficulty "${{ inputs.difficulty }}"
+            -port "${{ inputs.local_port }}"
+            -maxplayers "${{ inputs.max_players }}"
+            -configpath "$TSHOCK_CONFIG_DIR"
+            -logpath "$LOG_DIR"
+          )
+          if [ -n "$PASSWORD" ]; then
+            CMD+=( -pass "$PASSWORD" )
+          fi
+          exec "\${CMD[@]}"
+          EOF
 
           elif [ "$SERVER_TYPE" = "vanilla" ]; then
             cat > "$SERVER_DIR/start-terraria.sh" <<EOF
-#!/usr/bin/env bash
-cd "$GITHUB_WORKSPACE"
-exec "$RUNTIME_DIR/TerrariaServer.bin.x86_64" -config "$CONFIG_FILE"
-EOF
+          #!/usr/bin/env bash
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          exec "$RUNTIME_DIR/TerrariaServer.bin.x86_64" -config "$CONFIG_FILE"
+          EOF
 
           elif [ "$SERVER_TYPE" = "tmodloader" ]; then
             cat > "$SERVER_DIR/start-terraria.sh" <<EOF
-#!/usr/bin/env bash
-cd "$RUNTIME_DIR"
-exec ./start-tModLoaderServer.sh \\
-  -config "$GITHUB_WORKSPACE/$CONFIG_FILE" \\
-  -tmlsavedirectory "$GITHUB_WORKSPACE/$SERVER_DIR"
-EOF
+          #!/usr/bin/env bash
+          set -e
+          cd "$RUNTIME_DIR"
+          exec ./start-tModLoaderServer.sh \
+            -config "$GITHUB_WORKSPACE/$CONFIG_FILE" \
+            -tmlsavedirectory "$GITHUB_WORKSPACE/$SERVER_DIR"
+          EOF
 
           else
             echo "ERROR: unknown server type: $SERVER_TYPE"
             exit 1
           fi
 
+          sed -i 's/^[[:space:]]*//' "$SERVER_DIR/start-terraria.sh"
           chmod +x "$SERVER_DIR/start-terraria.sh"
 
           echo "============================================================"
