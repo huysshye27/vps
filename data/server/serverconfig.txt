@@ -1,0 +1,10 @@
+world=data/server/worlds/friends.wld
+autocreate=3
+worldname=friends
+difficulty=2
+maxplayers=8
+port=7777
+password=
+motd=Temporary Terraria server on GitHub Actions
+secure=1
+language=en-US
