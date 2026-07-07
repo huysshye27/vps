@@ -1,4 +1,4 @@
-name: Temporary VPS (Ngrok - All Platforms)
+name: Temporary VPS (Ngrok - All Platforms) - FIXED
 
 on:
   workflow_dispatch:
@@ -151,7 +151,7 @@ jobs:
           for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
 
       # ==========================================
-      # 🪟 WINDOWS SETUP (SSH & RDP)
+      # 🪟 WINDOWS SETUP (SSH & RDP) - FIXED
       # ==========================================
       - name: Setup Windows VPS
         if: runner.os == 'Windows'
@@ -166,16 +166,17 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
+          # Cài Ngrok
           choco install ngrok -y --no-progress | Out-Null
 
+          # Tạo user (với mật khẩu mạnh)
           $Password = ConvertTo-SecureString $env:SSH_PASS -AsPlainText -Force
-          
           if ($env:ENABLE_ROOT -eq "yes") {
               $TargetUser = "runneradmin"
           } else {
               $TargetUser = $env:SSH_USER
           }
-          
           try {
               if (Get-LocalUser -Name $TargetUser -ErrorAction SilentlyContinue) {
                   Set-LocalUser -Name $TargetUser -Password $Password
@@ -185,40 +186,61 @@ jobs:
               }
           } catch {
               Write-Host "=========================================================================="
-              Write-Host "❌ LỖI TẠO USER: Mật khẩu bạn nhập quá yếu hoặc vi phạm chính sách Windows!"
-              Write-Host "👉 YÊU CẦU BẮT BUỘC:"
-              Write-Host "   1. Dài tối thiểu 8 ký tự."
-              Write-Host "   2. Phải có: Chữ HOA, chữ thường, SỐ và Ký tự đặc biệt (VD: @, !, #)."
-              Write-Host "   3. KHÔNG ĐƯỢC chứa tên user (vd: user là 'runner' thì pass không có chữ 'runner')."
+              Write-Host "❌ LỖI TẠO USER: Mật khẩu không đủ mạnh hoặc vi phạm chính sách Windows!"
+              Write-Host "👉 Yêu cầu: dài >=8 ký tự, có HOA, thường, SỐ và ký tự đặc biệt, không chứa tên user."
               Write-Host "=========================================================================="
               exit 1
           }
 
           if ($env:CONNECTION_TYPE -eq 'rdp' -or $env:CONNECTION_TYPE -eq 'vnc') {
-              Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
-              Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
-              Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
-              $NgrokPort = 3389
-              $ProtName = "RDP"
+            # Bật RDP
+            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+            # TẮT Network Level Authentication (NLA) - FIX lỗi 0x1104
+            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+            # Cho phép firewall
+            Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+            # Khởi động lại dịch vụ RDP
+            Restart-Service TermService -Force -ErrorAction SilentlyContinue
+            $NgrokPort = 3389
+            $ProtName = "RDP"
           } else {
-              Start-Service sshd
-              Set-Service -Name sshd -StartupType 'Automatic'
-              $SshdConfig = "$env:ProgramData\ssh\sshd_config"
-              if (Test-Path $SshdConfig) {
-                  (Get-Content $SshdConfig) -replace '^#?Port .*', "Port $env:SSH_PORT" | Set-Content $SshdConfig
-                  Restart-Service sshd
-              }
-              New-NetFirewallRule -Name "Open SSH Port" -DisplayName "Open SSH Port" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort $env:SSH_PORT | Out-Null
-              $NgrokPort = $env:SSH_PORT
-              $ProtName = "SSH"
+            # SSH
+            Start-Service sshd
+            Set-Service -Name sshd -StartupType 'Automatic'
+            $SshdConfig = "$env:ProgramData\ssh\sshd_config"
+            if (Test-Path $SshdConfig) {
+                (Get-Content $SshdConfig) -replace '^#?Port .*', "Port $env:SSH_PORT" | Set-Content $SshdConfig
+                Restart-Service sshd
+            }
+            New-NetFirewallRule -Name "Open SSH Port" -DisplayName "Open SSH Port" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort $env:SSH_PORT
+            $NgrokPort = $env:SSH_PORT
+            $ProtName = "SSH"
           }
 
+          # Xác thực và chạy Ngrok trong background ổn định
           ngrok config add-authtoken $env:NGROK_TOKEN
-          Start-Process -FilePath "ngrok" -ArgumentList "tcp $NgrokPort" -NoNewWindow
-          Start-Sleep -Seconds 5
+          # Dùng Start-Job để giữ tiến trình nền
+          $job = Start-Job -ScriptBlock { ngrok tcp $using:NgrokPort --log=stdout } 
+          Start-Sleep -Seconds 8
 
-          $Tunnels = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
-          $NgrokUrl = $Tunnels.tunnels[0].public_url -replace "tcp://", ""
+          # Lấy thông tin tunnel
+          $retry = 0
+          do {
+            try {
+              $Tunnels = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction Stop
+              $NgrokUrl = $Tunnels.tunnels[0].public_url -replace "tcp://", ""
+              break
+            } catch {
+              $retry++
+              Start-Sleep -Seconds 5
+            }
+          } while ($retry -lt 3)
+
+          if (-not $NgrokUrl) {
+            Write-Host "❌ Không thể lấy tunnel Ngrok. Log:"
+            Get-Content -Path "$env:APPDATA\ngrok\logs\ngrok.log" -Tail 20
+            throw "Ngrok tunnel failed"
+          }
 
           Write-Host "=============================================="
           Write-Host "✅ WINDOWS VPS SẴN SÀNG ($ProtName)!"
@@ -229,7 +251,10 @@ jobs:
           Write-Host "=============================================="
 
           $MaxMinutes = [int]$env:MAX_MINUTES
-          for ($i = $MaxMinutes; $i -gt 0; $i--) { Write-Host "⏱️ $i phút..."; Start-Sleep -Seconds 60 }
+          for ($i = $MaxMinutes; $i -gt 0; $i--) {
+            Write-Host "⏱️ $i phút..."
+            Start-Sleep -Seconds 60
+          }
 
       # ==========================================
       # 🍎 macOS SETUP (SSH & VNC)
