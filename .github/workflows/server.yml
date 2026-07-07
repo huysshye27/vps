@@ -1,90 +1,453 @@
-name: Terraria
+name: Terraria TShock Node Relay
 
 on:
   workflow_dispatch:
     inputs:
       relay_host:
+        description: "Node relay host"
         required: true
-        default: kinetic.pikamc.vn
+        default: "kinetic.pikamc.vn"
+
       relay_port:
+        description: "Node relay port"
         required: true
         default: "26499"
-      world:
+
+      world_name:
+        description: "World name"
         required: true
-        default: friends
-      minutes:
+        default: "friends"
+
+      world_size:
+        description: "World size: 1=Small, 2=Medium, 3=Large"
+        required: true
+        default: "1"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+
+      difficulty:
+        description: "Difficulty: 0=Classic, 1=Expert, 2=Master, 3=Journey"
+        required: true
+        default: "0"
+        type: choice
+        options:
+          - "0"
+          - "1"
+          - "2"
+          - "3"
+
+      max_players:
+        description: "Max players"
+        required: true
+        default: "8"
+
+      server_password:
+        description: "Server password, empty = no password"
+        required: false
+        default: ""
+
+      port:
+        description: "Local Terraria port inside GitHub runner"
+        required: true
+        default: "7777"
+
+      tshock_version:
+        description: "TShock version tag, use latest or tag like v5.2.4"
+        required: true
+        default: "latest"
+
+      run_minutes:
+        description: "Run time minutes, max safe value 330"
         required: true
         default: "330"
+
+      auto_restart:
+        description: "Auto trigger next workflow run after saving"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
 
 permissions:
   contents: write
   actions: write
 
+concurrency:
+  group: terraria-tshock-node-relay
+  cancel-in-progress: false
+
 jobs:
-  run:
+  terraria:
     runs-on: ubuntu-latest
     timeout-minutes: 355
 
+    env:
+      SERVER_DIR: server
+      DATA_DIR: data
+      WORLD_DIR: data/worlds
+      CONFIG_DIR: data/config
+      LOG_DIR: data/logs
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Install
+      - name: Print job info
         run: |
+          echo "========== JOB INFO =========="
+          echo "Repository: ${{ github.repository }}"
+          echo "Branch/ref: ${{ github.ref }}"
+          echo "Ref name: ${{ github.ref_name }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Workflow: ${{ github.workflow }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Run number: ${{ github.run_number }}"
+          echo "Workspace: $GITHUB_WORKSPACE"
+          echo
+          echo "========== INPUTS =========="
+          echo "relay_host=${{ inputs.relay_host }}"
+          echo "relay_port=${{ inputs.relay_port }}"
+          echo "world_name=${{ inputs.world_name }}"
+          echo "world_size=${{ inputs.world_size }}"
+          echo "difficulty=${{ inputs.difficulty }}"
+          echo "max_players=${{ inputs.max_players }}"
+          echo "port=${{ inputs.port }}"
+          echo "tshock_version=${{ inputs.tshock_version }}"
+          echo "run_minutes=${{ inputs.run_minutes }}"
+          echo "auto_restart=${{ inputs.auto_restart }}"
+          if [ -n "${{ inputs.server_password }}" ]; then
+            echo "server_password=set"
+          else
+            echo "server_password=empty"
+          fi
+          echo
+          echo "========== SYSTEM =========="
+          uname -a
+          whoami
+          id
+          pwd
+          node -v || true
+          npm -v || true
+          df -h
+          free -h
+
+      - name: Validate inputs
+        run: |
+          set -e
+
+          if [ ! -f server.js ]; then
+            echo "ERROR: server.js not found in repository root."
+            echo "Put server.js here:"
+            echo "$GITHUB_WORKSPACE/server.js"
+            echo
+            echo "Current files:"
+            find . -maxdepth 3 -type f | sort
+            exit 1
+          fi
+
+          RUN_MINUTES="${{ inputs.run_minutes }}"
+          if ! echo "$RUN_MINUTES" | grep -Eq '^[0-9]+$'; then
+            echo "ERROR: run_minutes must be number"
+            exit 1
+          fi
+
+          if [ "$RUN_MINUTES" -gt 330 ]; then
+            echo "ERROR: use run_minutes <= 330"
+            exit 1
+          fi
+
+          PORT="${{ inputs.port }}"
+          if ! echo "$PORT" | grep -Eq '^[0-9]+$'; then
+            echo "ERROR: port must be number"
+            exit 1
+          fi
+
+          MAX_PLAYERS="${{ inputs.max_players }}"
+          if ! echo "$MAX_PLAYERS" | grep -Eq '^[0-9]+$'; then
+            echo "ERROR: max_players must be number"
+            exit 1
+          fi
+
+      - name: Install system packages
+        run: |
+          set -e
           sudo apt-get update
-          sudo apt-get install -y curl unzip jq
+          sudo apt-get install -y curl unzip jq findutils procps net-tools lsof
 
-      - name: Download TShock
+      - name: Prepare folders
         run: |
-          mkdir -p server data/worlds data/config data/logs
-          URL=$(curl -s https://api.github.com/repos/Pryaxis/TShock/releases/latest | jq -r '.assets[] | select(.name | test("linux-x64.*Release.zip$|linux-x64-Release.zip$")) | .browser_download_url' | head -n 1)
+          set -e
+          mkdir -p "$SERVER_DIR" "$WORLD_DIR" "$CONFIG_DIR" "$LOG_DIR"
+          echo "========== INITIAL FILE TREE =========="
+          find . -maxdepth 4 -type f | sort
+
+      - name: Download and extract TShock
+        run: |
+          set -e
+
+          rm -rf "$SERVER_DIR"
+          mkdir -p "$SERVER_DIR"
+          rm -rf tshock_extract
+          mkdir -p tshock_extract
+
+          VERSION="${{ inputs.tshock_version }}"
+
+          if [ "$VERSION" = "latest" ]; then
+            API_URL="https://api.github.com/repos/Pryaxis/TShock/releases/latest"
+          else
+            API_URL="https://api.github.com/repos/Pryaxis/TShock/releases/tags/$VERSION"
+          fi
+
+          echo "========== TSHOCK API =========="
+          echo "$API_URL"
+
+          echo "========== RELEASE ASSETS =========="
+          curl -s "$API_URL" | jq -r '.assets[].name'
+
+          URL="$(curl -s "$API_URL" | jq -r '.assets[] | select(.name | test("linux-x64.*\\.zip$|linux-x64.*Release.*\\.zip$|linux-x64-Release\\.zip$")) | .browser_download_url' | head -n 1)"
+
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "Could not auto-detect linux-x64 zip. Trying first zip asset..."
+            URL="$(curl -s "$API_URL" | jq -r '.assets[] | select(.name | test("\\.zip$")) | .browser_download_url' | head -n 1)"
+          fi
+
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "ERROR: Could not find TShock zip asset."
+            exit 1
+          fi
+
+          echo "========== DOWNLOAD =========="
+          echo "$URL"
+
           curl -L "$URL" -o tshock.zip
-          unzip -q tshock.zip -d server
-          chmod +x server/TShock.Server
+
+          echo "========== ZIP INFO =========="
+          ls -lh tshock.zip
+          unzip -l tshock.zip | head -n 200
+
+          echo "========== EXTRACT =========="
+          unzip -q tshock.zip -d tshock_extract
+
+          echo "========== EXTRACTED TREE =========="
+          find tshock_extract -maxdepth 5 -type f | sort | head -n 300
+
+          TSHOCK_BIN="$(find tshock_extract -type f -name 'TShock.Server' | head -n 1)"
+
+          if [ -z "$TSHOCK_BIN" ]; then
+            echo "ERROR: TShock.Server not found after extraction."
+            echo "All extracted files:"
+            find tshock_extract -type f | sort
+            exit 1
+          fi
+
+          echo "Found TShock binary:"
+          echo "$TSHOCK_BIN"
+
+          TSHOCK_ROOT="$(dirname "$TSHOCK_BIN")"
+          echo "TShock root:"
+          echo "$TSHOCK_ROOT"
+
+          cp -a "$TSHOCK_ROOT"/. "$SERVER_DIR"/
+          chmod +x "$SERVER_DIR/TShock.Server"
+
+          echo "========== SERVER DIR =========="
+          find "$SERVER_DIR" -maxdepth 4 -type f | sort | head -n 300
+          ls -lah "$SERVER_DIR"
+          file "$SERVER_DIR/TShock.Server" || true
 
       - name: Start TShock
         run: |
-          ./server/TShock.Server \
-            -world "data/worlds/${{ inputs.world }}.wld" \
-            -autocreate 1 \
-            -port 7777 \
-            -maxplayers 8 \
-            -configpath data/config \
-            -logpath data/logs > tshock.log 2>&1 &
-          echo $! > tshock.pid
-          sleep 10
-          tail -n 80 tshock.log || true
+          set -e
 
-      - name: Start tunnel
+          WORLD_FILE="$WORLD_DIR/${{ inputs.world_name }}.wld"
+          PASSWORD="${{ inputs.server_password }}"
+
+          echo "========== START TSHOCK =========="
+          echo "World file: $WORLD_FILE"
+          echo "Local port: ${{ inputs.port }}"
+          echo "Max players: ${{ inputs.max_players }}"
+          echo "World size: ${{ inputs.world_size }}"
+          echo "Difficulty: ${{ inputs.difficulty }}"
+          echo "Config dir: $CONFIG_DIR"
+          echo "Log dir: $LOG_DIR"
+
+          ARGS=(
+            -world "$WORLD_FILE"
+            -autocreate "${{ inputs.world_size }}"
+            -difficulty "${{ inputs.difficulty }}"
+            -port "${{ inputs.port }}"
+            -maxplayers "${{ inputs.max_players }}"
+            -configpath "$CONFIG_DIR"
+            -logpath "$LOG_DIR"
+          )
+
+          if [ -n "$PASSWORD" ]; then
+            ARGS+=(-pass "$PASSWORD")
+          fi
+
+          echo "Command:"
+          printf '%q ' "$SERVER_DIR/TShock.Server" "${ARGS[@]}"
+          echo
+
+          "$SERVER_DIR/TShock.Server" "${ARGS[@]}" > tshock.log 2>&1 &
+          echo $! > tshock.pid
+
+          sleep 15
+
+          echo "========== PROCESS =========="
+          ps aux | grep -i TShock | grep -v grep || true
+
+          echo "========== PORTS =========="
+          netstat -tulpn || true
+          lsof -i -P -n || true
+
+          echo "========== TSHOCK LOG =========="
+          tail -n 200 tshock.log || true
+
+          if ! kill -0 "$(cat tshock.pid)" 2>/dev/null; then
+            echo "ERROR: TShock exited early."
+            exit 1
+          fi
+
+      - name: Start Node tunnel client
         run: |
+          set -e
+
+          echo "========== START TUNNEL =========="
+          echo "Relay host: ${{ inputs.relay_host }}"
+          echo "Relay port: ${{ inputs.relay_port }}"
+          echo "Local host: 127.0.0.1"
+          echo "Local port: ${{ inputs.port }}"
+
           RELAY_HOST="${{ inputs.relay_host }}" \
           RELAY_PORT="${{ inputs.relay_port }}" \
-          LOCAL_PORT=7777 \
+          LOCAL_PORT="${{ inputs.port }}" \
           node server.js client > tunnel.log 2>&1 &
+
           echo $! > tunnel.pid
-          sleep 5
-          tail -n 80 tunnel.log || true
 
-      - name: Run
+          sleep 8
+
+          echo "========== TUNNEL PROCESS =========="
+          ps aux | grep 'node server.js client' | grep -v grep || true
+
+          echo "========== TUNNEL LOG =========="
+          tail -n 200 tunnel.log || true
+
+          if ! kill -0 "$(cat tunnel.pid)" 2>/dev/null; then
+            echo "ERROR: tunnel client exited early."
+            exit 1
+          fi
+
+      - name: Print connection info
         run: |
-          echo "Connect Terraria to: ${{ inputs.relay_host }}:${{ inputs.relay_port }}"
-          sleep $((${{ inputs.minutes }} * 60))
+          echo "=========================================="
+          echo "SERVER READY"
+          echo "=========================================="
+          echo "Terraria host: ${{ inputs.relay_host }}"
+          echo "Terraria port: ${{ inputs.relay_port }}"
+          echo
+          echo "Local GitHub runner server:"
+          echo "127.0.0.1:${{ inputs.port }}"
+          echo
+          echo "World:"
+          echo "$WORLD_DIR/${{ inputs.world_name }}.wld"
+          echo
+          echo "Run minutes:"
+          echo "${{ inputs.run_minutes }}"
+          echo "=========================================="
 
-      - name: Stop
+      - name: Run server
+        run: |
+          RUN_SECONDS=$((${{ inputs.run_minutes }} * 60))
+          echo "Running for ${{ inputs.run_minutes }} minutes..."
+          sleep "$RUN_SECONDS"
+
+      - name: Stop services
         if: always()
         run: |
-          kill $(cat tunnel.pid) 2>/dev/null || true
-          kill -INT $(cat tshock.pid) 2>/dev/null || true
-          sleep 20
-          kill $(cat tshock.pid) 2>/dev/null || true
-          tail -n 100 tshock.log || true
-          tail -n 100 tunnel.log || true
+          set +e
 
-      - name: Save
+          echo "========== STOP TUNNEL =========="
+          if [ -f tunnel.pid ]; then
+            TUNNEL_PID="$(cat tunnel.pid)"
+            echo "Tunnel PID: $TUNNEL_PID"
+            kill "$TUNNEL_PID" 2>/dev/null || true
+          fi
+
+          echo "========== STOP TSHOCK =========="
+          if [ -f tshock.pid ]; then
+            TSHOCK_PID="$(cat tshock.pid)"
+            echo "TShock PID: $TSHOCK_PID"
+
+            kill -INT "$TSHOCK_PID" 2>/dev/null || true
+            sleep 30
+
+            if kill -0 "$TSHOCK_PID" 2>/dev/null; then
+              echo "TShock still running, sending TERM"
+              kill -TERM "$TSHOCK_PID" 2>/dev/null || true
+              sleep 10
+            fi
+
+            if kill -0 "$TSHOCK_PID" 2>/dev/null; then
+              echo "TShock still running, sending KILL"
+              kill -KILL "$TSHOCK_PID" 2>/dev/null || true
+            fi
+          fi
+
+          echo "========== FINAL PROCESS LIST =========="
+          ps aux | grep -Ei 'TShock|node server.js' | grep -v grep || true
+
+          echo "========== FINAL FILE TREE =========="
+          find data -maxdepth 5 -type f | sort || true
+
+          echo "========== FINAL TSHOCK LOG =========="
+          tail -n 300 tshock.log || true
+
+          echo "========== FINAL TUNNEL LOG =========="
+          tail -n 300 tunnel.log || true
+
+      - name: Save data
         if: always()
         run: |
-          git config user.name bot
-          git config user.email bot@example.com
+          set +e
+
+          echo "========== SAVE DATA =========="
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git status --short
           git add data
-          git commit -m save || exit 0
-          git pull --rebase || true
-          git push
+
+          if git diff --cached --quiet; then
+            echo "No data changes to commit."
+          else
+            git commit -m "Save Terraria data"
+            git pull --rebase || true
+            git push
+          fi
+
+      - name: Trigger next run
+        if: ${{ always() && inputs.auto_restart == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "========== AUTO RESTART =========="
+          gh workflow run "server.yml" \
+            --ref "${{ github.ref_name }}" \
+            -f relay_host="${{ inputs.relay_host }}" \
+            -f relay_port="${{ inputs.relay_port }}" \
+            -f world_name="${{ inputs.world_name }}" \
+            -f world_size="${{ inputs.world_size }}" \
+            -f difficulty="${{ inputs.difficulty }}" \
+            -f max_players="${{ inputs.max_players }}" \
+            -f server_password="${{ inputs.server_password }}" \
+            -f port="${{ inputs.port }}" \
+            -f tshock_version="${{ inputs.tshock_version }}" \
+            -f run_minutes="${{ inputs.run_minutes }}" \
+            -f auto_restart="${{ inputs.auto_restart }}"
