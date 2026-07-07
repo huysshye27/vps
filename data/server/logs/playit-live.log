@@ -1,6 +1,2 @@
-Could not connect to the playit service. playit also tried to start it first, but startup failed: The playit daemon is not reachable at /run/playit/playitd.sock.
-playitd must be running in the background before playit can connect to it.
-
-Run with --systemd or --openrc to let playit start the installed service, or start playitd manually and connect with --socket-path:
-  playitd --socket-path=./playit.sock --secret-path=./playit.toml
-  playit --socket-path=./playit.sock
+[2m2026-07-07T05:30:06.817876Z[0m [32m INFO[0m [2mplayitd::daemon[0m[2m:[0m Starting playitd [3msocket_path[0m[2m=[0mNone [3msecret_path[0m[2m=[0mSome("/home/runner/work/vps/vps/data/playit/config/playit_gg/playit.toml") [3mversion[0m[2m=[0m1.0.10
+playitd error: IPC error: Failed to bind to socket: No such file or directory (os error 2)
