@@ -670,43 +670,67 @@ jobs:
           echo "============================================================"
 
           mkdir -p "$PLAYIT_DIR"
-          docker rm -f playit 2>/dev/null || true
+          mkdir -p "$PLAYIT_DIR/home"
+          mkdir -p "$PLAYIT_DIR/config"
+          mkdir -p "$LOG_DIR"
+          rm -f "$PLAYIT_DIR/playit.pid"
 
-          if [ -n "$PLAYIT_SECRET_KEY" ]; then
-            echo "Starting playit with PLAYIT_SECRET_KEY..."
-            docker run -d \
-              --name playit \
-              --network host \
-              -e SECRET_KEY="$PLAYIT_SECRET_KEY" \
-              -v "$PWD/$PLAYIT_DIR:/root/.config/playit" \
-              ghcr.io/playit-cloud/playit-agent:latest
-          else
-            echo "Starting playit without secret key."
-            echo "If this config folder is new, playit should print a setup/claim link."
-            docker run -d \
-              --name playit \
-              --network host \
-              -v "$PWD/$PLAYIT_DIR:/root/.config/playit" \
-              ghcr.io/playit-cloud/playit-agent:latest
+          echo "Downloading playit Linux binary..."
+
+          API_URL="https://api.github.com/repos/playit-cloud/playit-agent/releases/latest"
+
+          echo "Release assets:"
+          curl -s "$API_URL" | jq -r '.assets[].name' || true
+
+          PLAYIT_URL="$(curl -s "$API_URL" | jq -r '.assets[] | select(.name == "playit-linux-amd64" or (.name | test("linux-amd64$"))) | .browser_download_url' | head -n 1)"
+
+          if [ -z "$PLAYIT_URL" ] || [ "$PLAYIT_URL" = "null" ]; then
+            echo "ERROR: Could not find playit-linux-amd64 from GitHub release."
+            exit 1
           fi
 
-          sleep 8
+          echo "Download URL: $PLAYIT_URL"
+          curl -L "$PLAYIT_URL" -o playit-linux-amd64
+          chmod +x playit-linux-amd64
 
-          echo "============================================================"
-          echo "PLAYIT CONTAINER"
-          echo "============================================================"
-          docker ps --filter name=playit || true
+          echo "Starting playit binary..."
+          echo "HOME=$PWD/$PLAYIT_DIR/home"
+          echo "XDG_CONFIG_HOME=$PWD/$PLAYIT_DIR/config"
+
+          if [ -n "$PLAYIT_SECRET_KEY" ]; then
+            echo "PLAYIT_SECRET_KEY is set. Starting with secret key."
+            nohup env \
+              HOME="$PWD/$PLAYIT_DIR/home" \
+              XDG_CONFIG_HOME="$PWD/$PLAYIT_DIR/config" \
+              SECRET_KEY="$PLAYIT_SECRET_KEY" \
+              ./playit-linux-amd64 \
+              > "$LOG_DIR/playit-live.log" 2>&1 &
+          else
+            echo "PLAYIT_SECRET_KEY is not set."
+            echo "Starting first-run claim/setup mode."
+            nohup env \
+              HOME="$PWD/$PLAYIT_DIR/home" \
+              XDG_CONFIG_HOME="$PWD/$PLAYIT_DIR/config" \
+              ./playit-linux-amd64 \
+              > "$LOG_DIR/playit-live.log" 2>&1 &
+          fi
+
+          echo $! > "$PLAYIT_DIR/playit.pid"
+          echo "PLAYIT_MODE=binary" >> "$GITHUB_ENV"
+
+          echo "Waiting for playit to print setup info..."
+          sleep 10
 
           echo "============================================================"
           echo "PLAYIT INITIAL LOG"
           echo "============================================================"
-          docker logs --tail 300 playit || true
+          tail -n 300 "$LOG_DIR/playit-live.log" || true
 
           echo "============================================================"
           echo "PLAYIT SETUP LINK DETECT"
           echo "============================================================"
 
-          CLAIM_LINK="$(docker logs playit 2>&1 | grep -Eo 'https://[^ ]*(playit.gg|pit.gd)[^ ]*' | head -n 1 || true)"
+          CLAIM_LINK="$(grep -Eo 'https://[^ ]*(playit.gg|pit.gd)[^ ]*' "$LOG_DIR/playit-live.log" | head -n 1 || true)"
 
           if [ -n "$CLAIM_LINK" ]; then
             echo
@@ -718,25 +742,32 @@ jobs:
             echo
           else
             echo "No setup link detected yet."
-            echo "This is OK if data/playit already has saved config."
+            echo "Will keep checking for 5 minutes."
           fi
-
-          echo "Waiting up to 5 minutes for playit setup/config..."
-          echo "You can open the setup link while this job is waiting."
 
           for i in $(seq 1 20); do
             echo
             echo "============================================================"
             echo "PLAYIT CHECK $i/20"
             echo "============================================================"
-            docker logs --tail 160 playit || true
+            tail -n 220 "$LOG_DIR/playit-live.log" || true
 
-            NEW_LINK="$(docker logs playit 2>&1 | grep -Eo 'https://[^ ]*(playit.gg|pit.gd)[^ ]*' | head -n 1 || true)"
+            NEW_LINK="$(grep -Eo 'https://[^ ]*(playit.gg|pit.gd)[^ ]*' "$LOG_DIR/playit-live.log" | head -n 1 || true)"
             if [ -n "$NEW_LINK" ]; then
               echo
-              echo "PLAYIT SETUP LINK:"
+              echo "============================================================"
+              echo "PLAYIT SETUP LINK"
+              echo "============================================================"
               echo "$NEW_LINK"
+              echo "============================================================"
               echo
+            fi
+
+            if ! kill -0 "$(cat "$PLAYIT_DIR/playit.pid")" 2>/dev/null; then
+              echo "ERROR: playit exited early."
+              echo "Full playit log:"
+              cat "$LOG_DIR/playit-live.log" || true
+              exit 1
             fi
 
             sleep 15
@@ -745,7 +776,7 @@ jobs:
           echo "============================================================"
           echo "PLAYIT CONFIG FILES"
           echo "============================================================"
-          find "$PLAYIT_DIR" -maxdepth 6 -type f -print -exec ls -lh {} \; || true
+          find "$PLAYIT_DIR" -maxdepth 8 -type f -print -exec ls -lh {} \; || true
 
           echo "============================================================"
           echo "PLAYIT READY INFO"
@@ -897,7 +928,7 @@ jobs:
             lsof -i -P -n | grep -E '${{ inputs.local_port }}|3389|:${{ inputs.ssh_port }}' || true
 
             echo "--- playit logs ---"
-            docker logs --tail 120 playit || true
+            tail -n 160 "$LOG_DIR/playit-live.log" || true
 
             if [ "${{ inputs.connection_type }}" != "none" ]; then
               echo "--- ngrok log ---"
@@ -938,8 +969,13 @@ jobs:
             fi
           fi
 
-          docker logs --tail 500 playit > "$LOG_DIR/playit-last.log" 2>&1 || true
-          docker rm -f playit 2>/dev/null || true
+          if [ -f "$PLAYIT_DIR/playit.pid" ]; then
+            PLAYIT_PID="$(cat "$PLAYIT_DIR/playit.pid")"
+            echo "Playit PID: $PLAYIT_PID"
+            kill "$PLAYIT_PID" 2>/dev/null || true
+          fi
+
+          cp "$LOG_DIR/playit-live.log" "$LOG_DIR/playit-last.log" 2>/dev/null || true
 
           if [ -f /tmp/ngrok.pid ]; then
             kill "$(cat /tmp/ngrok.pid)" 2>/dev/null || true
