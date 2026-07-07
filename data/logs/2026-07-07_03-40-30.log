@@ -1,0 +1,11 @@
+2026-07-07 03:40:30 - <>c: INFO: Port overridden by startup argument. Set to 7777
+2026-07-07 03:40:30 - TextLog: INFO: Using ConstileationProvider for tile implementation
+2026-07-07 03:40:30 - TShock: INFO: TShock 6.1.0.0 (Profoundly Collaborative (3.11)) now running.
+2026-07-07 03:40:30 - TShock: INFO: AutoSave Enabled
+2026-07-07 03:40:30 - TShock: INFO: Backups Enabled
+2026-07-07 03:40:30 - TShock: INFO: Welcome to TShock for Terraria!
+2026-07-07 03:40:30 - TShock: INFO: TShock comes with no warranty & is free software.
+2026-07-07 03:40:30 - TShock: INFO: You can modify & distribute it under the terms of the GNU GPLv3.
+2026-07-07 03:43:35 - TShock: INFO: Login before join enabled. Users may be prompted for an account specific password instead of a server password on connect.
+2026-07-07 03:43:35 - TShock: INFO: Login using UUID enabled. Users automatically login via UUID.
+2026-07-07 03:43:35 - TShock: INFO: A malicious server can easily steal a user's UUID. You may consider turning this option off if you run a public server.
