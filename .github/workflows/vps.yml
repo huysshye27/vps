@@ -1,4 +1,4 @@
-name: Temporary VPS (Tailscale - All Platforms) - SELF HOSTED
+name: Tailscale Access - All Platforms
 
 on:
   workflow_dispatch:
@@ -16,39 +16,22 @@ on:
           - 'windows-2022'
           - 'macos-latest'
           - 'macos-13'
-      connection_type:
-        description: '🌐 Giao thức (SSH = Dòng lệnh, RDP/VNC = Đồ họa)'
-        required: true
-        default: 'ssh'
-        type: choice
-        options:
-          - 'ssh'
-          - 'rdp'
-          - 'vnc'
+      target_host:
+        description: '🌐 Host/IP trong Tailnet cần kiểm tra, ví dụ: my-server hoặc 100.x.y.z'
+        required: false
+        default: ''
       ssh_user:
-        description: '👤 Username'
-        required: true
+        description: '👤 Username máy đích trong Tailnet'
+        required: false
         default: 'runner'
-      ssh_password:
-        description: '🔑 Password (Phải có hoa, thường, số, ký tự đặc biệt)'
-        required: true
-        default: 'Vps@Secure2026!'
-      enable_root_ssh:
-        description: '🚀 Cho phép root/runneradmin?'
-        required: true
-        default: 'no'
-        type: choice
-        options:
-          - 'yes'
-          - 'no'
       ssh_port:
-        description: '🔌 SSH port (Chỉ dùng nếu chọn SSH)'
+        description: '🔌 SSH port máy đích'
         required: true
         default: '22'
       timezone:
-        description: '🕒 Múi giờ (vd: Asia/Ho_Chi_Minh, UTC)'
+        description: '🕒 Múi giờ'
         required: true
-        default: 'UTC'
+        default: 'Asia/Ho_Chi_Minh'
       max_runtime:
         description: '⏱️ Max runtime (minutes, max 350)'
         required: true
@@ -64,13 +47,8 @@ on:
           - '350'
 
 jobs:
-  vps:
-    # Chỉ chạy trên self-hosted runner của bạn.
-    # Hãy gắn label cho runner tương ứng: ubuntu-24.04, windows-latest, macos-13...
-    runs-on:
-      - self-hosted
-      - ${{ github.event.inputs.runner_os }}
-
+  tailscale:
+    runs-on: ${{ github.event.inputs.runner_os }}
     timeout-minutes: 350
 
     steps:
@@ -89,234 +67,27 @@ jobs:
           version: latest
 
       # ==========================================
-      # 🐧 LINUX SETUP (SSH & XRDP)
+      # 🐧 LINUX
       # ==========================================
-      - name: Setup Linux VPS
+      - name: Setup Linux Tailscale Access
         if: runner.os == 'Linux'
         env:
+          TARGET_HOST: ${{ github.event.inputs.target_host }}
           SSH_USER: ${{ github.event.inputs.ssh_user }}
-          SSH_PASS: ${{ github.event.inputs.ssh_password }}
-          ENABLE_ROOT: ${{ github.event.inputs.enable_root_ssh }}
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
-          CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
           TIMEZONE: ${{ github.event.inputs.timezone }}
+        shell: bash
         run: |
           set -e
+
           sudo timedatectl set-timezone "$TIMEZONE" || true
+          sudo apt update -qq
+          sudo apt install -y -qq curl jq tmux openssh-client
 
-          if [ "$ENABLE_ROOT" = "yes" ]; then
-            echo "root:$SSH_PASS" | sudo chpasswd
-          fi
-
-          if id "$SSH_USER" &>/dev/null; then
-            echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
-          else
-            sudo useradd -m -s /bin/bash "$SSH_USER"
-            echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
-            sudo usermod -aG sudo "$SSH_USER"
-          fi
-
-          echo "$SSH_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$SSH_USER
-
-          if [ "$CONNECTION_TYPE" = "rdp" ] || [ "$CONNECTION_TYPE" = "vnc" ]; then
-            echo ">>> Cài đặt XFCE4 Desktop và XRDP..."
-            sudo apt update -qq
-            sudo DEBIAN_FRONTEND=noninteractive apt install -y -qq xfce4 xfce4-goodies xrdp curl jq
-            sudo systemctl enable xrdp
-            sudo adduser xrdp ssl-cert || true
-            echo xfce4-session > /home/$SSH_USER/.xsession
-            sudo chown $SSH_USER:$SSH_USER /home/$SSH_USER/.xsession
-            sudo systemctl restart xrdp
-            TAILSCALE_PORT=3389
-            PROT_NAME="RDP"
-          else
-            echo ">>> Cấu hình SSH..."
-            sudo apt update -qq
-            sudo apt install -y -qq openssh-server curl jq tmux
-            sudo sed -i "s/^#Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
-            sudo sed -i "s/^Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
-            sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-            sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-            sudo systemctl restart ssh || sudo systemctl restart sshd
-            TAILSCALE_PORT=$SSH_PORT
-            PROT_NAME="SSH"
-          fi
-
-          echo ">>> Lấy IP Tailscale..."
+          echo ">>> Lấy IP Tailscale của runner..."
           sleep 3
-          TAILSCALE_IP=$(tailscale ip -4 | head -n 1)
 
-          echo "=============================================="
-          echo "✅ LINUX VPS SẴN SÀNG ($PROT_NAME)!"
-          echo "🖥️ OS: Ubuntu (${{ github.event.inputs.runner_os }})"
-          echo "👤 User: $SSH_USER"
-          echo "🔑 Pass: $SSH_PASS"
-          echo "🌐 Tailscale IP: $TAILSCALE_IP"
-          echo "🔌 Port: $TAILSCALE_PORT"
-
-          if [ "$PROT_NAME" = "SSH" ]; then
-            echo "👉 Kết nối SSH:"
-            echo "ssh -p $TAILSCALE_PORT $SSH_USER@$TAILSCALE_IP"
-          else
-            echo "👉 Kết nối RDP:"
-            echo "$TAILSCALE_IP:$TAILSCALE_PORT"
-          fi
-
-          echo "=============================================="
-          tailscale status || true
-          echo "=============================================="
-
-          for ((i=MAX_MINUTES; i>0; i--)); do
-            echo "⏱️ $i phút..."
-            sleep 60
-          done
-
-      # ==========================================
-      # 🪟 WINDOWS SETUP (SSH & RDP)
-      # ==========================================
-      - name: Setup Windows VPS
-        if: runner.os == 'Windows'
-        env:
-          SSH_USER: ${{ github.event.inputs.ssh_user }}
-          SSH_PASS: ${{ github.event.inputs.ssh_password }}
-          ENABLE_ROOT: ${{ github.event.inputs.enable_root_ssh }}
-          SSH_PORT: ${{ github.event.inputs.ssh_port }}
-          CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
-          MAX_MINUTES: ${{ steps.runtime.outputs.max }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          # Tạo user với mật khẩu mạnh
-          $Password = ConvertTo-SecureString $env:SSH_PASS -AsPlainText -Force
-
-          if ($env:ENABLE_ROOT -eq "yes") {
-              $TargetUser = "runneradmin"
-          } else {
-              $TargetUser = $env:SSH_USER
-          }
-
-          try {
-              if (Get-LocalUser -Name $TargetUser -ErrorAction SilentlyContinue) {
-                  Set-LocalUser -Name $TargetUser -Password $Password
-              } else {
-                  New-LocalUser -Name $TargetUser -Password $Password -FullName $TargetUser -Description "VPS User"
-                  Add-LocalGroupMember -Group "Administrators" -Member $TargetUser
-              }
-          } catch {
-              Write-Host "=========================================================================="
-              Write-Host "❌ LỖI TẠO USER: Mật khẩu không đủ mạnh hoặc vi phạm chính sách Windows!"
-              Write-Host "👉 Yêu cầu: dài >=8 ký tự, có HOA, thường, SỐ và ký tự đặc biệt, không chứa tên user."
-              Write-Host "=========================================================================="
-              exit 1
-          }
-
-          if ($env:CONNECTION_TYPE -eq 'rdp' -or $env:CONNECTION_TYPE -eq 'vnc') {
-            # Bật RDP
-            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-
-            # TẮT Network Level Authentication (NLA) - FIX lỗi 0x1104
-            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
-
-            # Cho phép firewall
-            Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-
-            # Khởi động lại dịch vụ RDP
-            Restart-Service TermService -Force -ErrorAction SilentlyContinue
-
-            $TailscalePort = 3389
-            $ProtName = "RDP"
-          } else {
-            # SSH
-            Start-Service sshd
-            Set-Service -Name sshd -StartupType 'Automatic'
-
-            $SshdConfig = "$env:ProgramData\ssh\sshd_config"
-            if (Test-Path $SshdConfig) {
-                (Get-Content $SshdConfig) -replace '^#?Port .*', "Port $env:SSH_PORT" | Set-Content $SshdConfig
-                Restart-Service sshd
-            }
-
-            New-NetFirewallRule -Name "Open SSH Port" -DisplayName "Open SSH Port" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort $env:SSH_PORT -ErrorAction SilentlyContinue
-
-            $TailscalePort = $env:SSH_PORT
-            $ProtName = "SSH"
-          }
-
-          Start-Sleep -Seconds 3
-          $TailscaleIp = (tailscale ip -4 | Select-Object -First 1)
-
-          if (-not $TailscaleIp) {
-            Write-Host "❌ Không lấy được Tailscale IP."
-            tailscale status
-            throw "Tailscale IP not found"
-          }
-
-          Write-Host "=============================================="
-          Write-Host "✅ WINDOWS VPS SẴN SÀNG ($ProtName)!"
-          Write-Host "🖥️ OS: Windows (${{ github.event.inputs.runner_os }})"
-          Write-Host "👤 User: $TargetUser"
-          Write-Host "🔑 Pass: $env:SSH_PASS"
-          Write-Host "🌐 Tailscale IP: $TailscaleIp"
-          Write-Host "🔌 Port: $TailscalePort"
-
-          if ($ProtName -eq "SSH") {
-            Write-Host "👉 Kết nối SSH:"
-            Write-Host "ssh -p $TailscalePort $TargetUser@$TailscaleIp"
-          } else {
-            Write-Host "👉 Kết nối RDP:"
-            Write-Host "$TailscaleIp`:$TailscalePort"
-          }
-
-          Write-Host "=============================================="
-          tailscale status
-          Write-Host "=============================================="
-
-          $MaxMinutes = [int]$env:MAX_MINUTES
-          for ($i = $MaxMinutes; $i -gt 0; $i--) {
-            Write-Host "⏱️ $i phút..."
-            Start-Sleep -Seconds 60
-          }
-
-      # ==========================================
-      # 🍎 macOS SETUP (SSH & VNC)
-      # ==========================================
-      - name: Setup macOS VPS
-        if: runner.os == 'macOS'
-        env:
-          SSH_USER: ${{ github.event.inputs.ssh_user }}
-          SSH_PASS: ${{ github.event.inputs.ssh_password }}
-          CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
-          SSH_PORT: ${{ github.event.inputs.ssh_port }}
-          MAX_MINUTES: ${{ steps.runtime.outputs.max }}
-        run: |
-          set -e
-
-          brew install jq --quiet || true
-
-          if ! id "$SSH_USER" &>/dev/null; then
-              sudo sysadminctl -addUser "$SSH_USER" -password "$SSH_PASS" -admin
-          else
-              sudo dscl . -passwd /Users/"$SSH_USER" "$SSH_PASS"
-          fi
-
-          if [ "$CONNECTION_TYPE" = "rdp" ] || [ "$CONNECTION_TYPE" = "vnc" ]; then
-              echo ">>> Bật Screen Sharing (VNC)..."
-              sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -restart -agent -privs -all
-              sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -allowAccessFor -specifiedUsers
-              sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -users "$SSH_USER" -access -on -privs -all
-              TAILSCALE_PORT=5900
-              PROT_NAME="VNC (Screen Sharing)"
-          else
-              echo ">>> Bật Remote Login (SSH)..."
-              sudo systemsetup -setremotelogin on
-              TAILSCALE_PORT=22
-              PROT_NAME="SSH"
-          fi
-
-          echo ">>> Lấy IP Tailscale..."
-          sleep 3
           TAILSCALE_IP=$(tailscale ip -4 | head -n 1)
 
           if [ -z "$TAILSCALE_IP" ]; then
@@ -326,24 +97,134 @@ jobs:
           fi
 
           echo "=============================================="
-          echo "✅ macOS VPS SẴN SÀNG ($PROT_NAME)!"
-          echo "🖥️ OS: macOS (${{ github.event.inputs.runner_os }})"
-          echo "👤 User: $SSH_USER"
-          echo "🔑 Pass: $SSH_PASS"
-          echo "🌐 Tailscale IP: $TAILSCALE_IP"
-          echo "🔌 Port: $TAILSCALE_PORT"
+          echo "✅ LINUX RUNNER ĐÃ VÀO TAILSCALE!"
+          echo "🖥️ OS: Linux (${{ github.event.inputs.runner_os }})"
+          echo "🌐 Runner Tailscale IP: $TAILSCALE_IP"
+          echo "=============================================="
+          echo "📋 Tailnet status:"
+          tailscale status || true
+          echo "=============================================="
 
-          if [ "$PROT_NAME" = "SSH" ]; then
-            echo "👉 Kết nối SSH:"
-            echo "ssh -p $TAILSCALE_PORT $SSH_USER@$TAILSCALE_IP"
+          if [ -n "$TARGET_HOST" ]; then
+            echo ">>> Kiểm tra kết nối tới target: $TARGET_HOST"
+            tailscale ping "$TARGET_HOST" || true
+
+            echo "=============================================="
+            echo "👉 Lệnh SSH tới máy đích nếu đã cấu hình key/password:"
+            echo "ssh -p $SSH_PORT $SSH_USER@$TARGET_HOST"
+            echo "=============================================="
           else
-            echo "👉 Kết nối VNC:"
-            echo "$TAILSCALE_IP:$TAILSCALE_PORT"
+            echo "ℹ️ Bạn chưa nhập target_host."
+            echo "👉 Hãy nhập hostname hoặc IP Tailscale của máy cần remote, ví dụ: 100.x.y.z"
+          fi
+
+          for ((i=MAX_MINUTES; i>0; i--)); do
+            echo "⏱️ $i phút..."
+            sleep 60
+          done
+
+      # ==========================================
+      # 🪟 WINDOWS
+      # ==========================================
+      - name: Setup Windows Tailscale Access
+        if: runner.os == 'Windows'
+        env:
+          TARGET_HOST: ${{ github.event.inputs.target_host }}
+          SSH_USER: ${{ github.event.inputs.ssh_user }}
+          SSH_PORT: ${{ github.event.inputs.ssh_port }}
+          MAX_MINUTES: ${{ steps.runtime.outputs.max }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Start-Sleep -Seconds 3
+
+          $TailscaleIp = (tailscale ip -4 | Select-Object -First 1)
+
+          if (-not $TailscaleIp) {
+            Write-Host "❌ Không lấy được Tailscale IP."
+            tailscale status
+            throw "Tailscale IP not found"
+          }
+
+          Write-Host "=============================================="
+          Write-Host "✅ WINDOWS RUNNER ĐÃ VÀO TAILSCALE!"
+          Write-Host "🖥️ OS: Windows (${{ github.event.inputs.runner_os }})"
+          Write-Host "🌐 Runner Tailscale IP: $TailscaleIp"
+          Write-Host "=============================================="
+          Write-Host "📋 Tailnet status:"
+          tailscale status
+          Write-Host "=============================================="
+
+          if ($env:TARGET_HOST -ne "") {
+            Write-Host ">>> Kiểm tra kết nối tới target: $env:TARGET_HOST"
+            tailscale ping $env:TARGET_HOST
+
+            Write-Host "=============================================="
+            Write-Host "👉 Lệnh SSH tới máy đích nếu đã cấu hình key/password:"
+            Write-Host "ssh -p $env:SSH_PORT $env:SSH_USER@$env:TARGET_HOST"
+            Write-Host "=============================================="
+          } else {
+            Write-Host "ℹ️ Bạn chưa nhập target_host."
+            Write-Host "👉 Hãy nhập hostname hoặc IP Tailscale của máy cần remote, ví dụ: 100.x.y.z"
+          }
+
+          $MaxMinutes = [int]$env:MAX_MINUTES
+          for ($i = $MaxMinutes; $i -gt 0; $i--) {
+            Write-Host "⏱️ $i phút..."
+            Start-Sleep -Seconds 60
+          }
+
+      # ==========================================
+      # 🍎 macOS
+      # ==========================================
+      - name: Setup macOS Tailscale Access
+        if: runner.os == 'macOS'
+        env:
+          TARGET_HOST: ${{ github.event.inputs.target_host }}
+          SSH_USER: ${{ github.event.inputs.ssh_user }}
+          SSH_PORT: ${{ github.event.inputs.ssh_port }}
+          MAX_MINUTES: ${{ steps.runtime.outputs.max }}
+          TIMEZONE: ${{ github.event.inputs.timezone }}
+        shell: bash
+        run: |
+          set -e
+
+          sudo systemsetup -settimezone "$TIMEZONE" || true
+          brew install jq --quiet || true
+
+          echo ">>> Lấy IP Tailscale của runner..."
+          sleep 3
+
+          TAILSCALE_IP=$(tailscale ip -4 | head -n 1)
+
+          if [ -z "$TAILSCALE_IP" ]; then
+            echo "❌ Không lấy được Tailscale IP."
+            tailscale status || true
+            exit 1
           fi
 
           echo "=============================================="
+          echo "✅ macOS RUNNER ĐÃ VÀO TAILSCALE!"
+          echo "🖥️ OS: macOS (${{ github.event.inputs.runner_os }})"
+          echo "🌐 Runner Tailscale IP: $TAILSCALE_IP"
+          echo "=============================================="
+          echo "📋 Tailnet status:"
           tailscale status || true
           echo "=============================================="
+
+          if [ -n "$TARGET_HOST" ]; then
+            echo ">>> Kiểm tra kết nối tới target: $TARGET_HOST"
+            tailscale ping "$TARGET_HOST" || true
+
+            echo "=============================================="
+            echo "👉 Lệnh SSH tới máy đích nếu đã cấu hình key/password:"
+            echo "ssh -p $SSH_PORT $SSH_USER@$TARGET_HOST"
+            echo "=============================================="
+          else
+            echo "ℹ️ Bạn chưa nhập target_host."
+            echo "👉 Hãy nhập hostname hoặc IP Tailscale của máy cần remote, ví dụ: 100.x.y.z"
+          fi
 
           for ((i=MAX_MINUTES; i>0; i--)); do
             echo "⏱️ $i phút..."
