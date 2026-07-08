@@ -1,4 +1,4 @@
-name: Temporary VPS (Ngrok - All Platforms) - FIXED
+name: Temporary VPS (Tailscale - All Platforms) - SELF HOSTED
 
 on:
   workflow_dispatch:
@@ -65,7 +65,12 @@ on:
 
 jobs:
   vps:
-    runs-on: ${{ github.event.inputs.runner_os }}
+    # Chỉ chạy trên self-hosted runner của bạn.
+    # Hãy gắn label cho runner tương ứng: ubuntu-24.04, windows-latest, macos-13...
+    runs-on:
+      - self-hosted
+      - ${{ github.event.inputs.runner_os }}
+
     timeout-minutes: 350
 
     steps:
@@ -76,6 +81,12 @@ jobs:
           MAX="${{ github.event.inputs.max_runtime }}"
           if [ "$MAX" -gt 350 ]; then MAX=350; fi
           echo "max=$MAX" >> $GITHUB_OUTPUT
+
+      - name: Connect Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ vars.TAILSCALE_AUTHKEY }}
+          version: latest
 
       # ==========================================
       # 🐧 LINUX SETUP (SSH & XRDP)
@@ -89,16 +100,15 @@ jobs:
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
           CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
-          NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
           TIMEZONE: ${{ github.event.inputs.timezone }}
         run: |
           set -e
           sudo timedatectl set-timezone "$TIMEZONE" || true
-          
+
           if [ "$ENABLE_ROOT" = "yes" ]; then
             echo "root:$SSH_PASS" | sudo chpasswd
           fi
-          
+
           if id "$SSH_USER" &>/dev/null; then
             echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
           else
@@ -106,6 +116,7 @@ jobs:
             echo "$SSH_USER:$SSH_PASS" | sudo chpasswd
             sudo usermod -aG sudo "$SSH_USER"
           fi
+
           echo "$SSH_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$SSH_USER
 
           if [ "$CONNECTION_TYPE" = "rdp" ] || [ "$CONNECTION_TYPE" = "vnc" ]; then
@@ -113,45 +124,56 @@ jobs:
             sudo apt update -qq
             sudo DEBIAN_FRONTEND=noninteractive apt install -y -qq xfce4 xfce4-goodies xrdp curl jq
             sudo systemctl enable xrdp
-            sudo adduser xrdp ssl-cert
+            sudo adduser xrdp ssl-cert || true
             echo xfce4-session > /home/$SSH_USER/.xsession
             sudo chown $SSH_USER:$SSH_USER /home/$SSH_USER/.xsession
             sudo systemctl restart xrdp
-            NGROK_PORT=3389
+            TAILSCALE_PORT=3389
             PROT_NAME="RDP"
           else
             echo ">>> Cấu hình SSH..."
-            sudo apt update -qq && sudo apt install -y -qq openssh-server curl jq tmux
+            sudo apt update -qq
+            sudo apt install -y -qq openssh-server curl jq tmux
             sudo sed -i "s/^#Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
             sudo sed -i "s/^Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
             sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-            sudo systemctl restart ssh
-            NGROK_PORT=$SSH_PORT
+            sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+            sudo systemctl restart ssh || sudo systemctl restart sshd
+            TAILSCALE_PORT=$SSH_PORT
             PROT_NAME="SSH"
           fi
 
-          echo ">>> Khởi động Ngrok..."
-          curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-          echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-          sudo apt update -qq && sudo apt install -y -qq ngrok
-          ngrok config add-authtoken "$NGROK_TOKEN"
-          nohup ngrok tcp $NGROK_PORT --log=stdout > /tmp/ngrok.log 2>&1 &
-          sleep 5
+          echo ">>> Lấy IP Tailscale..."
+          sleep 3
+          TAILSCALE_IP=$(tailscale ip -4 | head -n 1)
 
-          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' | sed 's/tcp:\/\///')
-          
           echo "=============================================="
           echo "✅ LINUX VPS SẴN SÀNG ($PROT_NAME)!"
           echo "🖥️ OS: Ubuntu (${{ github.event.inputs.runner_os }})"
           echo "👤 User: $SSH_USER"
           echo "🔑 Pass: $SSH_PASS"
-          echo "🌐 Địa chỉ kết nối: $NGROK_URL"
+          echo "🌐 Tailscale IP: $TAILSCALE_IP"
+          echo "🔌 Port: $TAILSCALE_PORT"
+
+          if [ "$PROT_NAME" = "SSH" ]; then
+            echo "👉 Kết nối SSH:"
+            echo "ssh -p $TAILSCALE_PORT $SSH_USER@$TAILSCALE_IP"
+          else
+            echo "👉 Kết nối RDP:"
+            echo "$TAILSCALE_IP:$TAILSCALE_PORT"
+          fi
+
+          echo "=============================================="
+          tailscale status || true
           echo "=============================================="
 
-          for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
+          for ((i=MAX_MINUTES; i>0; i--)); do
+            echo "⏱️ $i phút..."
+            sleep 60
+          done
 
       # ==========================================
-      # 🪟 WINDOWS SETUP (SSH & RDP) - FIXED
+      # 🪟 WINDOWS SETUP (SSH & RDP)
       # ==========================================
       - name: Setup Windows VPS
         if: runner.os == 'Windows'
@@ -162,21 +184,19 @@ jobs:
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
           CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
-          NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          # Cài Ngrok
-          choco install ngrok -y --no-progress | Out-Null
-
-          # Tạo user (với mật khẩu mạnh)
+          # Tạo user với mật khẩu mạnh
           $Password = ConvertTo-SecureString $env:SSH_PASS -AsPlainText -Force
+
           if ($env:ENABLE_ROOT -eq "yes") {
               $TargetUser = "runneradmin"
           } else {
               $TargetUser = $env:SSH_USER
           }
+
           try {
               if (Get-LocalUser -Name $TargetUser -ErrorAction SilentlyContinue) {
                   Set-LocalUser -Name $TargetUser -Password $Password
@@ -195,51 +215,42 @@ jobs:
           if ($env:CONNECTION_TYPE -eq 'rdp' -or $env:CONNECTION_TYPE -eq 'vnc') {
             # Bật RDP
             Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+
             # TẮT Network Level Authentication (NLA) - FIX lỗi 0x1104
             Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+
             # Cho phép firewall
             Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
             # Khởi động lại dịch vụ RDP
             Restart-Service TermService -Force -ErrorAction SilentlyContinue
-            $NgrokPort = 3389
+
+            $TailscalePort = 3389
             $ProtName = "RDP"
           } else {
             # SSH
             Start-Service sshd
             Set-Service -Name sshd -StartupType 'Automatic'
+
             $SshdConfig = "$env:ProgramData\ssh\sshd_config"
             if (Test-Path $SshdConfig) {
                 (Get-Content $SshdConfig) -replace '^#?Port .*', "Port $env:SSH_PORT" | Set-Content $SshdConfig
                 Restart-Service sshd
             }
-            New-NetFirewallRule -Name "Open SSH Port" -DisplayName "Open SSH Port" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort $env:SSH_PORT
-            $NgrokPort = $env:SSH_PORT
+
+            New-NetFirewallRule -Name "Open SSH Port" -DisplayName "Open SSH Port" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort $env:SSH_PORT -ErrorAction SilentlyContinue
+
+            $TailscalePort = $env:SSH_PORT
             $ProtName = "SSH"
           }
 
-          # Xác thực và chạy Ngrok trong background ổn định
-          ngrok config add-authtoken $env:NGROK_TOKEN
-          # Dùng Start-Job để giữ tiến trình nền
-          $job = Start-Job -ScriptBlock { ngrok tcp $using:NgrokPort --log=stdout } 
-          Start-Sleep -Seconds 8
+          Start-Sleep -Seconds 3
+          $TailscaleIp = (tailscale ip -4 | Select-Object -First 1)
 
-          # Lấy thông tin tunnel
-          $retry = 0
-          do {
-            try {
-              $Tunnels = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction Stop
-              $NgrokUrl = $Tunnels.tunnels[0].public_url -replace "tcp://", ""
-              break
-            } catch {
-              $retry++
-              Start-Sleep -Seconds 5
-            }
-          } while ($retry -lt 3)
-
-          if (-not $NgrokUrl) {
-            Write-Host "❌ Không thể lấy tunnel Ngrok. Log:"
-            Get-Content -Path "$env:APPDATA\ngrok\logs\ngrok.log" -Tail 20
-            throw "Ngrok tunnel failed"
+          if (-not $TailscaleIp) {
+            Write-Host "❌ Không lấy được Tailscale IP."
+            tailscale status
+            throw "Tailscale IP not found"
           }
 
           Write-Host "=============================================="
@@ -247,7 +258,19 @@ jobs:
           Write-Host "🖥️ OS: Windows (${{ github.event.inputs.runner_os }})"
           Write-Host "👤 User: $TargetUser"
           Write-Host "🔑 Pass: $env:SSH_PASS"
-          Write-Host "🌐 Địa chỉ kết nối: $NgrokUrl"
+          Write-Host "🌐 Tailscale IP: $TailscaleIp"
+          Write-Host "🔌 Port: $TailscalePort"
+
+          if ($ProtName -eq "SSH") {
+            Write-Host "👉 Kết nối SSH:"
+            Write-Host "ssh -p $TailscalePort $TargetUser@$TailscaleIp"
+          } else {
+            Write-Host "👉 Kết nối RDP:"
+            Write-Host "$TailscaleIp`:$TailscalePort"
+          }
+
+          Write-Host "=============================================="
+          tailscale status
           Write-Host "=============================================="
 
           $MaxMinutes = [int]$env:MAX_MINUTES
@@ -267,11 +290,11 @@ jobs:
           CONNECTION_TYPE: ${{ github.event.inputs.connection_type }}
           SSH_PORT: ${{ github.event.inputs.ssh_port }}
           MAX_MINUTES: ${{ steps.runtime.outputs.max }}
-          NGROK_TOKEN: ${{ vars.NGROK_AUTH_TOKEN }}
         run: |
           set -e
-          brew install jq --quiet
-          
+
+          brew install jq --quiet || true
+
           if ! id "$SSH_USER" &>/dev/null; then
               sudo sysadminctl -addUser "$SSH_USER" -password "$SSH_PASS" -admin
           else
@@ -283,32 +306,46 @@ jobs:
               sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -restart -agent -privs -all
               sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -allowAccessFor -specifiedUsers
               sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -users "$SSH_USER" -access -on -privs -all
-              NGROK_PORT=5900
+              TAILSCALE_PORT=5900
               PROT_NAME="VNC (Screen Sharing)"
           else
               echo ">>> Bật Remote Login (SSH)..."
               sudo systemsetup -setremotelogin on
-              NGROK_PORT=22
+              TAILSCALE_PORT=22
               PROT_NAME="SSH"
           fi
 
-          echo ">>> Cài đặt Ngrok..."
-          curl -sSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-amd64.tgz -o ngrok.tgz
-          tar -xzf ngrok.tgz
-          sudo mv ngrok /usr/local/bin/
+          echo ">>> Lấy IP Tailscale..."
+          sleep 3
+          TAILSCALE_IP=$(tailscale ip -4 | head -n 1)
 
-          ngrok config add-authtoken "$NGROK_TOKEN"
-          nohup ngrok tcp $NGROK_PORT --log=stdout > /tmp/ngrok.log 2>&1 &
-          sleep 5
-
-          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' | sed 's/tcp:\/\///')
+          if [ -z "$TAILSCALE_IP" ]; then
+            echo "❌ Không lấy được Tailscale IP."
+            tailscale status || true
+            exit 1
+          fi
 
           echo "=============================================="
           echo "✅ macOS VPS SẴN SÀNG ($PROT_NAME)!"
           echo "🖥️ OS: macOS (${{ github.event.inputs.runner_os }})"
           echo "👤 User: $SSH_USER"
           echo "🔑 Pass: $SSH_PASS"
-          echo "🌐 Địa chỉ kết nối: $NGROK_URL"
+          echo "🌐 Tailscale IP: $TAILSCALE_IP"
+          echo "🔌 Port: $TAILSCALE_PORT"
+
+          if [ "$PROT_NAME" = "SSH" ]; then
+            echo "👉 Kết nối SSH:"
+            echo "ssh -p $TAILSCALE_PORT $SSH_USER@$TAILSCALE_IP"
+          else
+            echo "👉 Kết nối VNC:"
+            echo "$TAILSCALE_IP:$TAILSCALE_PORT"
+          fi
+
+          echo "=============================================="
+          tailscale status || true
           echo "=============================================="
 
-          for ((i=MAX_MINUTES; i>0; i--)); do echo "⏱️ $i phút..."; sleep 60; done
+          for ((i=MAX_MINUTES; i>0; i--)); do
+            echo "⏱️ $i phút..."
+            sleep 60
+          done
